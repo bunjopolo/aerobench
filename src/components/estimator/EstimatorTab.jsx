@@ -1,9 +1,20 @@
 import { useState, useMemo } from 'react'
 import { parseRouteGPX } from '../../lib/gpxParser'
 import { GRAVITY, solveVelocity, safeNum } from '../../lib/physics'
+import { useSetups } from '../../hooks/useSetups'
 
 export const EstimatorTab = ({ physics }) => {
-  const { cda, crr, mass, rho, eff } = physics
+  const { cda: globalCda, crr: globalCrr, mass: globalMass, rho, eff } = physics
+  const { setups } = useSetups()
+
+  // Setup selection
+  const [selectedSetupId, setSelectedSetupId] = useState(null)
+  const selectedSetup = setups.find(s => s.id === selectedSetupId)
+
+  // Use setup values if selected, otherwise use global physics
+  const cda = selectedSetup?.cda || globalCda
+  const crr = selectedSetup?.crr || globalCrr
+  const mass = selectedSetup?.mass || globalMass
 
   const [mode, setMode] = useState('manual')
   const [estPwr, setEstPwr] = useState(250)
@@ -147,6 +158,44 @@ export const EstimatorTab = ({ physics }) => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
         {/* Inputs */}
         <div className="space-y-6">
+          {/* Setup Selector */}
+          <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
+            <h3 className="text-xs font-bold text-gray-400 uppercase mb-2">Equipment Setup</h3>
+            <select
+              value={selectedSetupId || ''}
+              onChange={e => setSelectedSetupId(e.target.value || null)}
+              className="input-dark w-full text-sm"
+            >
+              <option value="">Use Global Physics (Sidebar)</option>
+              {setups.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            {selectedSetup && (
+              <div className="mt-3 p-3 bg-dark-bg rounded border border-dark-border">
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <span className="text-gray-500 block">CdA</span>
+                    <span className="text-green-400 font-mono font-bold">{(selectedSetup.cda || 0).toFixed(4)}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block">Crr</span>
+                    <span className="text-blue-400 font-mono font-bold">{(selectedSetup.crr || 0).toFixed(5)}</span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 block">Mass</span>
+                    <span className="text-gray-300 font-mono font-bold">{selectedSetup.mass || globalMass} kg</span>
+                  </div>
+                </div>
+                {selectedSetup.bike_name && (
+                  <div className="mt-2 pt-2 border-t border-dark-border text-xs text-gray-500">
+                    {selectedSetup.bike_name}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
             <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
               <span>⚡</span> Scenario Inputs
@@ -213,10 +262,12 @@ export const EstimatorTab = ({ physics }) => {
             </div>
 
             <div className="mt-6 pt-6 border-t border-dark-border text-xs text-gray-500">
-              <p className="mb-2 uppercase tracking-wide">Physics Context (From Sidebar)</p>
+              <p className="mb-2 uppercase tracking-wide">
+                Active Physics {selectedSetup ? `(${selectedSetup.name})` : '(Global)'}
+              </p>
               <div className="grid grid-cols-2 gap-2 font-mono text-gray-400">
                 <div>CdA: <span className="text-green-400">{cda.toFixed(4)}</span></div>
-                <div>Crr: <span className="text-blue-400">{crr.toFixed(4)}</span></div>
+                <div>Crr: <span className="text-blue-400">{crr.toFixed(5)}</span></div>
                 <div>Mass: <span className="text-gray-300">{mass}kg</span></div>
                 <div>Rho: <span className="text-gray-300">{rho.toFixed(3)}</span></div>
               </div>
