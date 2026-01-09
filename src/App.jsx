@@ -6,11 +6,13 @@ import { AnalysisTab } from './components/analysis/AnalysisTab'
 import { EstimatorTab } from './components/estimator/EstimatorTab'
 import { SetupsTab } from './components/setups/SetupsTab'
 import { DashboardTab } from './components/dashboard/DashboardTab'
+import { PrivacyPolicy, TermsOfService, CookieNotice } from './components/legal'
 import { CHAIN_DATA } from './lib/physics'
 
 const AppContent = () => {
   const { isAuthenticated, loading } = useAuth()
   const [activeTab, setActiveTab] = useState('analysis')
+  const [legalPage, setLegalPage] = useState(null) // 'privacy' | 'terms' | null
 
   // Global physics state (shared across tabs)
   const [cda, setCda] = useState(0.320)
@@ -47,8 +49,21 @@ const AppContent = () => {
     )
   }
 
+  // Show legal pages (available even when not authenticated)
+  if (legalPage === 'privacy') {
+    return <PrivacyPolicy onBack={() => setLegalPage(null)} />
+  }
+  if (legalPage === 'terms') {
+    return <TermsOfService onBack={() => setLegalPage(null)} />
+  }
+
   if (!isAuthenticated) {
-    return <LoginPage />
+    return (
+      <>
+        <LoginPage onShowPrivacy={() => setLegalPage('privacy')} onShowTerms={() => setLegalPage('terms')} />
+        <CookieNotice onShowPrivacy={() => setLegalPage('privacy')} />
+      </>
+    )
   }
 
   const physics = { cda, setCda, crr, setCrr, mass, setMass, eff, setEff, rho, setRho, chain, setChain: handleChainChange }
@@ -143,6 +158,19 @@ const AppContent = () => {
             </div>
           </div>
         </div>
+
+        {/* Footer Links */}
+        <div className="p-4 border-t border-dark-border">
+          <div className="flex justify-center gap-4 text-xs text-gray-500">
+            <button onClick={() => setLegalPage('privacy')} className="hover:text-gray-300 transition-colors">
+              Privacy
+            </button>
+            <span>·</span>
+            <button onClick={() => setLegalPage('terms')} className="hover:text-gray-300 transition-colors">
+              Terms
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* MAIN CONTENT */}
@@ -183,6 +211,9 @@ const AppContent = () => {
           {activeTab === 'setups' && <SetupsTab physics={physics} onLoadSetup={loadSetup} />}
         </div>
       </div>
+
+      {/* Cookie Notice */}
+      <CookieNotice onShowPrivacy={() => setLegalPage('privacy')} />
     </div>
   )
 }

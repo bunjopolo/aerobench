@@ -1,6 +1,6 @@
 import { useAuth } from '../../hooks/useAuth.jsx'
 
-export const LoginPage = () => {
+export const LoginPage = ({ onShowPrivacy, onShowTerms }) => {
   const { signInWithGoogle, signInWithGithub } = useAuth()
 
   return (
@@ -42,7 +42,14 @@ export const LoginPage = () => {
         </div>
 
         <p className="text-center text-xs text-gray-500 mt-8">
-          By signing in, you agree to save your analysis data securely in the cloud
+          By signing in, you agree to our{' '}
+          <button onClick={onShowTerms} className="text-brand-primary hover:text-indigo-400 underline">
+            Terms of Service
+          </button>{' '}
+          and{' '}
+          <button onClick={onShowPrivacy} className="text-brand-primary hover:text-indigo-400 underline">
+            Privacy Policy
+          </button>
         </p>
       </div>
     </div>
