@@ -1,8 +1,5 @@
-import { useState, useEffect } from 'react'
-import { useSetups } from '../../hooks/useSetups'
 import { useAuth } from '../../hooks/useAuth.jsx'
-import { useAnalyses } from '../../hooks/useAnalyses'
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts'
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 
 // Surface label helper
 const SURFACE_LABELS = {
@@ -15,10 +12,8 @@ const SURFACE_LABELS = {
 }
 const getSurfaceLabel = (value) => SURFACE_LABELS[value] || value || '-'
 
-export const DashboardTab = ({ physics }) => {
+export const DashboardTab = ({ physics, setups }) => {
   const { user } = useAuth()
-  const { setups, loading } = useSetups()
-  const { analyses } = useAnalyses() // Fetch all analyses
 
   if (!user) {
     return (
@@ -28,20 +23,10 @@ export const DashboardTab = ({ physics }) => {
     )
   }
 
-  // Calculate stats from analyses (actual measured values) or fall back to setups
-  const analysesWithCda = analyses.filter(a => a.fitted_cda > 0)
-  const analysesWithCrr = analyses.filter(a => a.fitted_crr > 0)
-  const setupsWithCda = setups.filter(s => s.cda != null)
-  const setupsWithCrr = setups.filter(s => s.crr != null)
-  const bestCda = analysesWithCda.length > 0
-    ? Math.min(...analysesWithCda.map(a => a.fitted_cda))
-    : (setupsWithCda.length > 0 ? Math.min(...setupsWithCda.map(s => s.cda)) : null)
-  const bestCrr = analysesWithCrr.length > 0
-    ? Math.min(...analysesWithCrr.map(a => a.fitted_crr))
-    : (setupsWithCrr.length > 0 ? Math.min(...setupsWithCrr.map(s => s.crr)) : null)
+  const safeSetups = setups || []
 
   // Speed comparison data for bar chart (only setups with CdA/Crr values)
-  const setupsWithValues = setups.filter(s => s.cda != null && s.crr != null)
+  const setupsWithValues = safeSetups.filter(s => s.cda != null && s.crr != null)
   const speedComparisonData = setupsWithValues.slice(0, 5).map(s => {
     const K = 0.5 * 1.225 * s.cda
     const fRes = (s.mass || 80) * 9.81 * s.crr
@@ -68,134 +53,33 @@ export const DashboardTab = ({ physics }) => {
         <p className="text-gray-400 text-sm">Overview of your performance data</p>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase mb-1">Total Setups</div>
-          <div className="text-3xl font-bold text-white">{setups.length}</div>
-        </div>
-        <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase mb-1">Best CdA</div>
-          <div className="text-3xl font-bold text-green-400 font-mono">
-            {bestCda ? bestCda.toFixed(4) : '--'}
+      {/* Speed Comparison */}
+      <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
+        <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">Setup Speed Comparison @ 250W</h3>
+        {speedComparisonData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={250}>
+            <BarChart data={speedComparisonData} layout="vertical">
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis type="number" domain={[35, 50]} stroke="#94a3b8" tick={{ fontSize: 10 }} unit=" km/h" />
+              <YAxis dataKey="name" type="category" stroke="#94a3b8" tick={{ fontSize: 10 }} width={80} />
+              <Tooltip
+                contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
+                formatter={(value) => [`${value} km/h`, 'Speed']}
+              />
+              <Bar dataKey="speed" fill="#6366f1" radius={[0, 4, 4, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <div className="h-[250px] flex items-center justify-center text-gray-500">
+            Create setups with CdA/Crr values to compare speeds
           </div>
-        </div>
-        <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase mb-1">Best Crr</div>
-          <div className="text-3xl font-bold text-blue-400 font-mono">
-            {bestCrr ? bestCrr.toFixed(5) : '--'}
-          </div>
-        </div>
-        <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase mb-1">Total Analyses</div>
-          <div className="text-3xl font-bold text-indigo-400">{analyses.length}</div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* CdA Progress Chart */}
-        <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-          <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">CdA Progress Over Time</h3>
-          {(() => {
-            // Group analyses by setup and prepare chart data
-            const setupColors = ['#4ade80', '#60a5fa', '#f472b6', '#facc15', '#a78bfa', '#fb923c']
-            const analysesWithSetup = analyses.filter(a => a.fitted_cda && a.setup_id)
-
-            // Get unique dates across all analyses
-            const allDates = [...new Set(analysesWithSetup.map(a =>
-              new Date(a.created_at).toLocaleDateString()
-            ))].sort((a, b) => new Date(a) - new Date(b))
-
-            // Get setups that have analyses
-            const setupsWithAnalyses = setups.filter(s =>
-              analysesWithSetup.some(a => a.setup_id === s.id)
-            )
-
-            // Build chart data: each row is a date, with a column per setup
-            const chartData = allDates.map(date => {
-              const row = { date }
-              setupsWithAnalyses.forEach(setup => {
-                const analysis = analysesWithSetup.find(a =>
-                  a.setup_id === setup.id &&
-                  new Date(a.created_at).toLocaleDateString() === date
-                )
-                if (analysis) {
-                  row[setup.name] = analysis.fitted_cda
-                }
-              })
-              return row
-            })
-
-            return chartData.length > 0 && setupsWithAnalyses.length > 0 ? (
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                  <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis
-                    domain={['dataMin - 0.005', 'dataMax + 0.005']}
-                    stroke="#94a3b8"
-                    tick={{ fontSize: 10 }}
-                    tickFormatter={(value) => value.toFixed(4)}
-                  />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
-                    labelStyle={{ color: '#94a3b8' }}
-                    formatter={(value) => [value.toFixed(4), 'CdA']}
-                  />
-                  <Legend />
-                  {setupsWithAnalyses.map((setup, i) => (
-                    <Line
-                      key={setup.id}
-                      type="monotone"
-                      dataKey={setup.name}
-                      stroke={setupColors[i % setupColors.length]}
-                      strokeWidth={2}
-                      dot={{ fill: setupColors[i % setupColors.length], r: 4 }}
-                      connectNulls
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-[250px] flex items-center justify-center text-gray-500">
-                No analysis history yet. Run analyses in the Analysis tab.
-              </div>
-            )
-          })()}
-        </div>
-
-        {/* Speed Comparison */}
-        <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-          <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">Setup Speed Comparison @ 250W</h3>
-          {speedComparisonData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={speedComparisonData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                <XAxis type="number" domain={[35, 50]} stroke="#94a3b8" tick={{ fontSize: 10 }} unit=" km/h" />
-                <YAxis dataKey="name" type="category" stroke="#94a3b8" tick={{ fontSize: 10 }} width={80} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
-                  formatter={(value) => [`${value} km/h`, 'Speed']}
-                />
-                <Bar dataKey="speed" fill="#6366f1" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-[250px] flex items-center justify-center text-gray-500">
-              Create setups to compare speeds
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       {/* Recent Setups */}
       <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
         <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">Recent Setups</h3>
-        {loading ? (
-          <div className="text-center py-8">
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-brand-primary mx-auto"></div>
-          </div>
-        ) : setups.length > 0 ? (
+        {safeSetups.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="text-xs text-gray-500 uppercase border-b border-dark-border">
@@ -213,7 +97,7 @@ export const DashboardTab = ({ physics }) => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-dark-border">
-                {setups.slice(0, 5).map(setup => (
+                {safeSetups.slice(0, 5).map(setup => (
                   <tr key={setup.id} className="hover:bg-dark-bg/50">
                     <td className="py-3 font-medium text-white whitespace-nowrap">
                       {setup.is_favorite && <span className="text-yellow-400 mr-1">★</span>}

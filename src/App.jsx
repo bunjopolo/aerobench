@@ -281,7 +281,7 @@ const AppContent = () => {
 
         {/* Content Area */}
         <div className="flex-1 relative overflow-auto">
-          {activeTab === 'dashboard' && <DashboardTab physics={physics} />}
+          {activeTab === 'dashboard' && <DashboardTab physics={physics} setups={setups} />}
           {activeTab === 'analysis' && (
             physics ? (
               <AnalysisTab
