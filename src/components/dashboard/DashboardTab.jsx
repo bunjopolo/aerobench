@@ -4,6 +4,17 @@ import { useAuth } from '../../hooks/useAuth.jsx'
 import { useAnalyses } from '../../hooks/useAnalyses'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts'
 
+// Surface label helper
+const SURFACE_LABELS = {
+  'new_pavement': 'New Pavement',
+  'worn_pavement': 'Worn Pavement',
+  'gravel_cat1': 'Cat 1 Gravel',
+  'gravel_cat2': 'Cat 2 Gravel',
+  'gravel_cat3': 'Cat 3 Gravel',
+  'gravel_cat4': 'Cat 4 Gravel',
+}
+const getSurfaceLabel = (value) => SURFACE_LABELS[value] || value || '-'
+
 export const DashboardTab = ({ physics }) => {
   const { user } = useAuth()
   const { setups, loading } = useSetups()
@@ -20,17 +31,20 @@ export const DashboardTab = ({ physics }) => {
   // Calculate stats from analyses (actual measured values) or fall back to setups
   const analysesWithCda = analyses.filter(a => a.fitted_cda > 0)
   const analysesWithCrr = analyses.filter(a => a.fitted_crr > 0)
+  const setupsWithCda = setups.filter(s => s.cda != null)
+  const setupsWithCrr = setups.filter(s => s.crr != null)
   const bestCda = analysesWithCda.length > 0
     ? Math.min(...analysesWithCda.map(a => a.fitted_cda))
-    : (setups.length > 0 ? Math.min(...setups.map(s => s.cda || 1)) : null)
+    : (setupsWithCda.length > 0 ? Math.min(...setupsWithCda.map(s => s.cda)) : null)
   const bestCrr = analysesWithCrr.length > 0
     ? Math.min(...analysesWithCrr.map(a => a.fitted_crr))
-    : (setups.length > 0 ? Math.min(...setups.map(s => s.crr || 1)) : null)
+    : (setupsWithCrr.length > 0 ? Math.min(...setupsWithCrr.map(s => s.crr)) : null)
 
-  // Speed comparison data for bar chart
-  const speedComparisonData = setups.slice(0, 5).map(s => {
-    const K = 0.5 * 1.225 * (s.cda || 0.3)
-    const fRes = (s.mass || 80) * 9.81 * (s.crr || 0.004)
+  // Speed comparison data for bar chart (only setups with CdA/Crr values)
+  const setupsWithValues = setups.filter(s => s.cda != null && s.crr != null)
+  const speedComparisonData = setupsWithValues.slice(0, 5).map(s => {
+    const K = 0.5 * 1.225 * s.cda
+    const fRes = (s.mass || 80) * 9.81 * s.crr
     const pwr = 250 * (s.drivetrain_efficiency || 0.975)
     let v = 10
     for (let i = 0; i < 10; i++) {
@@ -83,28 +97,63 @@ export const DashboardTab = ({ physics }) => {
         <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
           <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">CdA Progress Over Time</h3>
           {(() => {
-            // Prepare chart data from analyses (oldest first)
-            const chartData = [...analyses]
-              .filter(a => a.fitted_cda)
-              .sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
-              .map(a => ({
-                date: new Date(a.created_at).toLocaleDateString(),
-                cda: a.fitted_cda,
-                name: a.name || 'Analysis'
-              }))
+            // Group analyses by setup and prepare chart data
+            const setupColors = ['#4ade80', '#60a5fa', '#f472b6', '#facc15', '#a78bfa', '#fb923c']
+            const analysesWithSetup = analyses.filter(a => a.fitted_cda && a.setup_id)
 
-            return chartData.length > 0 ? (
+            // Get unique dates across all analyses
+            const allDates = [...new Set(analysesWithSetup.map(a =>
+              new Date(a.created_at).toLocaleDateString()
+            ))].sort((a, b) => new Date(a) - new Date(b))
+
+            // Get setups that have analyses
+            const setupsWithAnalyses = setups.filter(s =>
+              analysesWithSetup.some(a => a.setup_id === s.id)
+            )
+
+            // Build chart data: each row is a date, with a column per setup
+            const chartData = allDates.map(date => {
+              const row = { date }
+              setupsWithAnalyses.forEach(setup => {
+                const analysis = analysesWithSetup.find(a =>
+                  a.setup_id === setup.id &&
+                  new Date(a.created_at).toLocaleDateString() === date
+                )
+                if (analysis) {
+                  row[setup.name] = analysis.fitted_cda
+                }
+              })
+              return row
+            })
+
+            return chartData.length > 0 && setupsWithAnalyses.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                   <XAxis dataKey="date" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis domain={['dataMin - 0.01', 'dataMax + 0.01']} stroke="#94a3b8" tick={{ fontSize: 10 }} />
+                  <YAxis
+                    domain={['dataMin - 0.005', 'dataMax + 0.005']}
+                    stroke="#94a3b8"
+                    tick={{ fontSize: 10 }}
+                    tickFormatter={(value) => value.toFixed(4)}
+                  />
                   <Tooltip
                     contentStyle={{ backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' }}
                     labelStyle={{ color: '#94a3b8' }}
                     formatter={(value) => [value.toFixed(4), 'CdA']}
                   />
-                  <Line type="monotone" dataKey="cda" stroke="#4ade80" strokeWidth={2} dot={{ fill: '#4ade80', r: 4 }} name="CdA" />
+                  <Legend />
+                  {setupsWithAnalyses.map((setup, i) => (
+                    <Line
+                      key={setup.id}
+                      type="monotone"
+                      dataKey={setup.name}
+                      stroke={setupColors[i % setupColors.length]}
+                      strokeWidth={2}
+                      dot={{ fill: setupColors[i % setupColors.length], r: 4 }}
+                      connectNulls
+                    />
+                  ))}
                 </LineChart>
               </ResponsiveContainer>
             ) : (
@@ -153,6 +202,10 @@ export const DashboardTab = ({ physics }) => {
                 <tr>
                   <th className="text-left py-2">Name</th>
                   <th className="text-left py-2">Bike</th>
+                  <th className="text-left py-2">Wheels</th>
+                  <th className="text-left py-2">Tires</th>
+                  <th className="text-left py-2">Surface</th>
+                  <th className="text-center py-2">Pressure (F/R)</th>
                   <th className="text-center py-2">CdA</th>
                   <th className="text-center py-2">Crr</th>
                   <th className="text-center py-2">Mass</th>
@@ -162,15 +215,27 @@ export const DashboardTab = ({ physics }) => {
               <tbody className="divide-y divide-dark-border">
                 {setups.slice(0, 5).map(setup => (
                   <tr key={setup.id} className="hover:bg-dark-bg/50">
-                    <td className="py-3 font-medium text-white">
+                    <td className="py-3 font-medium text-white whitespace-nowrap">
                       {setup.is_favorite && <span className="text-yellow-400 mr-1">★</span>}
                       {setup.name}
                     </td>
                     <td className="py-3 text-gray-400">{setup.bike_name || '-'}</td>
-                    <td className="py-3 text-center font-mono text-green-400">{(setup.cda || 0).toFixed(4)}</td>
-                    <td className="py-3 text-center font-mono text-blue-400">{(setup.crr || 0).toFixed(5)}</td>
+                    <td className="py-3 text-gray-400">{setup.wheel_type || '-'}</td>
+                    <td className="py-3 text-gray-400">{setup.tire_type || '-'}</td>
+                    <td className="py-3 text-gray-400">{getSurfaceLabel(setup.surface)}</td>
+                    <td className="py-3 text-center font-mono text-gray-400">
+                      {setup.front_tire_pressure || setup.rear_tire_pressure
+                        ? `${setup.front_tire_pressure || '-'}/${setup.rear_tire_pressure || '-'}`
+                        : '-'}
+                    </td>
+                    <td className={`py-3 text-center font-mono ${setup.cda != null ? 'text-green-400' : 'text-gray-500'}`}>
+                      {setup.cda != null ? setup.cda.toFixed(4) : '--'}
+                    </td>
+                    <td className={`py-3 text-center font-mono ${setup.crr != null ? 'text-blue-400' : 'text-gray-500'}`}>
+                      {setup.crr != null ? setup.crr.toFixed(5) : '--'}
+                    </td>
                     <td className="py-3 text-center font-mono">{setup.mass || '-'}</td>
-                    <td className="py-3 text-right text-gray-500 text-xs">
+                    <td className="py-3 text-right text-gray-500 text-xs whitespace-nowrap">
                       {setup.created_at ? new Date(setup.created_at).toLocaleDateString() : '-'}
                     </td>
                   </tr>

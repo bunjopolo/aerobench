@@ -46,33 +46,39 @@ export const safeNum = (val, fallback) => {
 }
 
 // Solve for velocity given power and conditions
-export const solveVelocity = (watts, grade, mass, cda, crr, rho, eff, elev = 0, useDynamicRho = true) => {
+// windSpeed in m/s, positive = headwind, negative = tailwind
+export const solveVelocity = (watts, grade, mass, cda, crr, rho, eff, elev = 0, windSpeed = 0) => {
   const wheelPwr = watts * eff
   const theta = Math.atan(grade / 100)
   const fRes = mass * GRAVITY * (Math.sin(theta) + crr * Math.cos(theta))
 
   // Adjust rho for altitude if elevation is provided
   let localRho = rho
-  if (useDynamicRho && typeof elev === 'number') {
+  if (typeof elev === 'number' && elev > 0) {
     localRho = rho * Math.exp(-elev / 9000)
   }
 
   const K = 0.5 * localRho * cda
 
-  // Newton-Raphson solver
+  // Newton-Raphson solver with wind
+  // Air velocity = ground velocity + headwind component
   let v = 10
-  for (let i = 0; i < 10; i++) {
-    const f = K * v * v * v + fRes * v - wheelPwr
-    const df = 3 * K * v * v + fRes
+  for (let i = 0; i < 15; i++) {
+    const va = v + windSpeed // apparent air velocity
+    const fAero = K * va * Math.abs(va) // drag force (preserves sign)
+    const f = fAero * v + fRes * v - wheelPwr
+    const df = K * (2 * va * v + va * Math.abs(va) / Math.max(0.1, v)) + fRes
     if (Math.abs(df) < 1e-6) break
-    v = v - f / df
+    const step = f / df
+    v = v - step
+    if (v < 0.1) v = 0.1
   }
   return Math.max(0, v)
 }
 
 // CdA/Crr solver for a segment
 export const solveCdaCrr = (
-  data, si, ei, initialCda, initialCrr, mass, eff, rho, offset, wSpd, wDir, fastMode = false
+  data, si, ei, initialCda, initialCrr, mass, eff, rho, offset, wSpd, wDir, fastMode = false, maxIterations = null
 ) => {
   const { pwr, v, a, ds, ele, b } = data
 
@@ -125,7 +131,7 @@ export const solveCdaCrr = (
     [0.22, 0.003],
   ]
 
-  const maxIter = fastMode ? 300 : 500
+  const maxIter = maxIterations ?? (fastMode ? 300 : 500)
   const minStep = fastMode ? 0.00001 : 0.000005
 
   let globalBest = { cda: initialCda, crr: initialCrr, rmse: Infinity }

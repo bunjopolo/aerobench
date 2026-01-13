@@ -60,6 +60,19 @@ export const useAnalyses = (setupId = null) => {
     return data
   }
 
+  const updateAnalysis = async (id, updates) => {
+    const { data, error } = await supabase
+      .from('analyses')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single()
+
+    if (error) throw error
+    setAnalyses(prev => prev.map(a => a.id === id ? data : a))
+    return data
+  }
+
   const deleteAnalysis = async (id) => {
     const { error } = await supabase
       .from('analyses')
@@ -75,6 +88,7 @@ export const useAnalyses = (setupId = null) => {
     loading,
     error,
     createAnalysis,
+    updateAnalysis,
     deleteAnalysis,
     refresh: fetchAnalyses
   }

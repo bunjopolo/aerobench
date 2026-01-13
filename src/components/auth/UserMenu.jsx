@@ -2,8 +2,12 @@ import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '../../hooks/useAuth.jsx'
 
 export const UserMenu = () => {
-  const { user, signOut } = useAuth()
+  const { user, signOut, deleteAccount } = useAuth()
   const [isOpen, setIsOpen] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteText, setDeleteText] = useState('')
+  const [deleting, setDeleting] = useState(false)
   const menuRef = useRef(null)
 
   useEffect(() => {
@@ -51,6 +55,15 @@ export const UserMenu = () => {
           </div>
           <button
             onClick={() => {
+              setShowSettings(true)
+              setIsOpen(false)
+            }}
+            className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-slate-700/50 transition-colors"
+          >
+            Settings
+          </button>
+          <button
+            onClick={() => {
               signOut()
               setIsOpen(false)
             }}
@@ -58,6 +71,105 @@ export const UserMenu = () => {
           >
             Sign out
           </button>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-md mx-4 animate-fade-in">
+            <div className="flex justify-between items-center p-4 border-b border-dark-border">
+              <h2 className="text-lg font-bold text-white">Settings</h2>
+              <button
+                onClick={() => {
+                  setShowSettings(false)
+                  setConfirmDelete(false)
+                  setDeleteText('')
+                }}
+                className="text-gray-400 hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-4 space-y-6">
+              {/* Account Info */}
+              <div>
+                <h3 className="label-sm mb-2">Account</h3>
+                <div className="bg-dark-bg p-3 rounded-lg border border-dark-border">
+                  <p className="text-sm text-white">{displayName}</p>
+                  <p className="text-xs text-gray-500">{user.email}</p>
+                </div>
+              </div>
+
+              {/* Danger Zone */}
+              <div>
+                <h3 className="label-sm mb-2 text-red-400">Danger Zone</h3>
+                <div className="bg-red-900/20 p-4 rounded-lg border border-red-900/50">
+                  {!confirmDelete ? (
+                    <>
+                      <p className="text-sm text-gray-300 mb-3">
+                        Permanently delete your account and all associated data including setups, analyses, and comparisons.
+                      </p>
+                      <button
+                        onClick={() => setConfirmDelete(true)}
+                        className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded transition-colors"
+                      >
+                        Delete Account
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm text-red-300 mb-3">
+                        This action cannot be undone. Type <span className="font-mono font-bold">DELETE</span> to confirm.
+                      </p>
+                      <input
+                        type="text"
+                        value={deleteText}
+                        onChange={(e) => setDeleteText(e.target.value)}
+                        placeholder="Type DELETE to confirm"
+                        className="input-dark w-full mb-3"
+                        autoFocus
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => {
+                            setConfirmDelete(false)
+                            setDeleteText('')
+                          }}
+                          className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white text-sm font-medium rounded transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={async () => {
+                            if (deleteText !== 'DELETE') return
+                            setDeleting(true)
+                            try {
+                              await deleteAccount()
+                            } catch (err) {
+                              alert('Error deleting account: ' + err.message)
+                              setDeleting(false)
+                            }
+                          }}
+                          disabled={deleteText !== 'DELETE' || deleting}
+                          className={`px-4 py-2 text-sm font-medium rounded transition-colors ${
+                            deleteText === 'DELETE' && !deleting
+                              ? 'bg-red-600 hover:bg-red-500 text-white'
+                              : 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                          }`}
+                        >
+                          {deleting ? 'Deleting...' : 'Permanently Delete'}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

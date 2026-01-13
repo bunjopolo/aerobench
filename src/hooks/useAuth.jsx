@@ -47,12 +47,20 @@ export const AuthProvider = ({ children }) => {
     if (error) throw error
   }
 
+  const deleteAccount = async () => {
+    const { error } = await supabase.rpc('delete_user_account')
+    if (error) throw error
+    // Sign out after deletion
+    await supabase.auth.signOut()
+  }
+
   const value = {
     user,
     loading,
     signInWithGoogle,
     signInWithGithub,
     signOut,
+    deleteAccount,
     isAuthenticated: !!user
   }
 
