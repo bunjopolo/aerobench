@@ -1,18 +1,22 @@
 import { useState, useMemo } from 'react'
+import { useAuth } from '../../hooks/useAuth.jsx'
 import { parseRouteGPX } from '../../lib/gpxParser'
 import { solveVelocity, safeNum } from '../../lib/physics'
 
-export const EstimatorTab = ({ physics, selectedSetup, setups, onSelectSetup }) => {
-  const { cda, crr, mass, eff, rho } = physics
+export const EstimatorTab = () => {
+  const { user } = useAuth()
+
+  // Physics inputs (user-configurable)
+  const [cda, setCda] = useState(0.25)
+  const [crr, setCrr] = useState(0.004)
+  const [mass, setMass] = useState(80)
+  const [eff, setEff] = useState(0.97)
+  const [rho, setRho] = useState(1.225)
 
   const [mode, setMode] = useState('manual')
   const [estPwr, setEstPwr] = useState(250)
   const [estGrade, setEstGrade] = useState(0)
   const [estDist, setEstDist] = useState(40)
-
-  // Comparison setup (optional)
-  const [compareSetupId, setCompareSetupId] = useState(null)
-  const compareSetup = setups?.find(s => s.id === compareSetupId)
 
   // Sweat loss
   const [useSweat, setUseSweat] = useState(false)
@@ -46,7 +50,7 @@ export const EstimatorTab = ({ physics, selectedSetup, setups, onSelectSetup }) 
     return solveVelocity(watts, grade, m, setupCda, setupCrr, rho, eff, elev, effectiveWind)
   }
 
-  // Calculate result for a given setup's values
+  // Calculate result for given values
   const calculateResult = (setupCda, setupCrr, setupMass) => {
     if (mode === 'manual') {
       if (!useSweat) {
@@ -90,20 +94,10 @@ export const EstimatorTab = ({ physics, selectedSetup, setups, onSelectSetup }) 
     return null
   }
 
-  // Results for selected setup
+  // Results for current values
   const currentRes = useMemo(() => {
     return calculateResult(cda, crr, mass)
   }, [estPwr, estGrade, estDist, cda, crr, mass, rho, eff, mode, routeData, useSweat, sweatRate, windSpeed, windDirection])
-
-  // Results for comparison setup (only if setup has CdA/Crr values)
-  const compareRes = useMemo(() => {
-    if (!compareSetup || compareSetup.cda == null || compareSetup.crr == null) return null
-    return calculateResult(
-      compareSetup.cda,
-      compareSetup.crr,
-      compareSetup.mass || mass
-    )
-  }, [compareSetup, estPwr, estGrade, estDist, mass, rho, eff, mode, routeData, useSweat, sweatRate, windSpeed, windDirection])
 
   const onRouteFile = (e) => {
     const f = e.target.files[0]
@@ -164,46 +158,118 @@ export const EstimatorTab = ({ physics, selectedSetup, setups, onSelectSetup }) 
     })
   }, [estPwr, estGrade, estDist, mass, mode, routeData, cda, crr, rho, eff, useSweat, sweatRate])
 
-  // Time difference vs comparison
-  const timeDiff = currentRes && compareRes ? compareRes.time - currentRes.time : null
-
-  // Check if CdA/Crr values are set
-  if (cda == null || crr == null) {
+  if (!user) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-center max-w-md">
-          <div className="text-6xl mb-4 opacity-30">📊</div>
-          <h2 className="text-xl font-bold text-white mb-2">No CdA/Crr Values</h2>
-          <p className="text-gray-400 mb-4">
-            This setup doesn't have CdA and Crr values yet. Run an analysis first to determine these values, then come back to estimate performance.
-          </p>
-        </div>
+        <p className="text-gray-500">Please sign in to use the estimator</p>
       </div>
     )
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto animate-fade-in text-gray-200">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        {/* Inputs */}
-        <div className="space-y-6">
-          {/* Current Setup Info */}
-          <div className="card bg-gradient-to-r from-indigo-900/30 to-dark-card border-indigo-500/30">
-            <span className="text-xs text-gray-400">Estimating for</span>
-            <h3 className="font-bold text-white text-lg">{selectedSetup?.name}</h3>
-            <div className="flex gap-4 mt-2 text-xs font-mono">
-              <span className="text-green-400">CdA: {cda.toFixed(4)}</span>
-              <span className="text-blue-400">Crr: {crr.toFixed(5)}</span>
-              <span className="text-gray-400">{mass}kg system</span>
+    <div className="p-6 max-w-5xl mx-auto">
+      {/* Header */}
+      <div className="mb-6">
+        <h2 className="text-2xl font-bold text-white">Speed Estimator</h2>
+        <p className="text-gray-400 text-sm">Predict performance based on your aerodynamic values</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Physics Inputs */}
+        <div className="space-y-4">
+          <div className="bg-dark-card p-5 rounded-xl border border-dark-border">
+            <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">Physics Values</h3>
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">CdA (m²)</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={cda}
+                  onChange={e => setCda(safeNum(e.target.value, cda))}
+                  className="input-dark w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Crr</label>
+                <input
+                  type="number"
+                  step="0.0001"
+                  value={crr}
+                  onChange={e => setCrr(safeNum(e.target.value, crr))}
+                  className="input-dark w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">System Mass (kg)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={mass}
+                  onChange={e => setMass(safeNum(e.target.value, mass))}
+                  className="input-dark w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Drivetrain Efficiency</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.8"
+                  max="1"
+                  value={eff}
+                  onChange={e => setEff(safeNum(e.target.value, eff))}
+                  className="input-dark w-full text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 mb-1 block">Air Density (kg/m³)</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={rho}
+                  onChange={e => setRho(safeNum(e.target.value, rho))}
+                  className="input-dark w-full text-sm"
+                />
+              </div>
             </div>
           </div>
 
-          <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-            <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
-              <span>⚡</span> Scenario
-            </h2>
+          {/* Weight Loss */}
+          <div className="bg-dark-card p-5 rounded-xl border border-dark-border">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-sm font-bold text-gray-400 uppercase">Weight Loss</h3>
+              <button
+                onClick={() => setUseSweat(!useSweat)}
+                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${useSweat ? 'bg-brand-primary' : 'bg-slate-600'}`}
+              >
+                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${useSweat ? 'translate-x-[18px]' : 'translate-x-1'}`} />
+              </button>
+            </div>
 
-            <div className="flex bg-dark-input p-1 rounded mb-6 border border-dark-border">
+            <div className={`transition-opacity duration-300 ${useSweat ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+              <select value={sweatMode} onChange={handleSweatChange} className="input-dark w-full text-xs py-2">
+                <option value="low">Low (0.5 L/hr)</option>
+                <option value="medium">Medium (1.0 L/hr)</option>
+                <option value="high">High (1.5 L/hr)</option>
+                <option value="custom">Custom</option>
+              </select>
+
+              {sweatMode === 'custom' && (
+                <div className="mt-2">
+                  <input type="number" step="0.1" value={sweatRate} onChange={e => setSweatRate(safeNum(e.target.value, sweatRate))} className="input-dark w-full" placeholder="kg/hr" />
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Scenario Inputs */}
+        <div className="space-y-4">
+          <div className="bg-dark-card p-5 rounded-xl border border-dark-border">
+            <h3 className="text-sm font-bold text-gray-400 uppercase mb-4">Scenario</h3>
+
+            <div className="flex bg-dark-input p-1 rounded mb-4 border border-dark-border">
               <button onClick={() => setMode('manual')} className={`flex-1 py-1.5 rounded text-xs font-medium transition-all ${mode === 'manual' ? 'bg-brand-primary text-white shadow' : 'text-gray-400 hover:text-white'}`}>Manual</button>
               <button onClick={() => setMode('file')} className={`flex-1 py-1.5 rounded text-xs font-medium transition-all ${mode === 'file' ? 'bg-brand-primary text-white shadow' : 'text-gray-400 hover:text-white'}`}>Route File</button>
             </div>
@@ -272,114 +338,30 @@ export const EstimatorTab = ({ physics, selectedSetup, setups, onSelectSetup }) 
               )}
             </div>
           </div>
-
-          {/* Compare with another setup */}
-          <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
-            <h3 className="label-sm mb-2">Compare With</h3>
-            <select
-              value={compareSetupId || ''}
-              onChange={e => setCompareSetupId(e.target.value || null)}
-              className="input-dark w-full text-sm"
-            >
-              <option value="">No comparison</option>
-              {setups?.filter(s => s.id !== selectedSetup?.id).map(s => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-            {compareSetup && (
-              <div className="mt-2 text-xs font-mono text-gray-400">
-                {compareSetup.cda != null && compareSetup.crr != null ? (
-                  <>CdA: {compareSetup.cda.toFixed(4)} • Crr: {compareSetup.crr.toFixed(5)}</>
-                ) : (
-                  <span className="text-yellow-500">No CdA/Crr values set</span>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Weight Degradation */}
-          <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-            <div className="flex justify-between items-center mb-4">
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                <span>💧</span> Weight Loss
-              </h2>
-              <button
-                onClick={() => setUseSweat(!useSweat)}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${useSweat ? 'bg-brand-primary' : 'bg-slate-600'}`}
-              >
-                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${useSweat ? 'translate-x-[18px]' : 'translate-x-1'}`} />
-              </button>
-            </div>
-
-            <div className={`transition-opacity duration-300 ${useSweat ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-              <select value={sweatMode} onChange={handleSweatChange} className="input-dark w-full text-xs py-2">
-                <option value="low">Low (0.5 L/hr)</option>
-                <option value="medium">Medium (1.0 L/hr)</option>
-                <option value="high">High (1.5 L/hr)</option>
-                <option value="custom">Custom</option>
-              </select>
-
-              {sweatMode === 'custom' && (
-                <div className="mt-2">
-                  <input type="number" step="0.1" value={sweatRate} onChange={e => setSweatRate(safeNum(e.target.value, sweatRate))} className="input-dark w-full" placeholder="kg/hr" />
-                </div>
-              )}
-            </div>
-          </div>
         </div>
 
         {/* Results */}
-        <div className="space-y-6">
+        <div className="space-y-4">
           {/* Main Result */}
           <div className="bg-gradient-to-br from-indigo-900 to-dark-card p-6 rounded-xl border border-indigo-500/30 shadow-lg">
             <h3 className="text-sm uppercase text-indigo-300 mb-1">
               {mode === 'manual' ? 'Estimated Speed' : 'Predicted Avg Speed'}
             </h3>
-            <div className="text-5xl font-bold text-white mb-2">
-              {currentRes ? currentRes.vKph.toFixed(2) : '--'} <span className="text-xl text-indigo-300 font-normal">km/h</span>
+            <div className="text-4xl font-bold text-white mb-2">
+              {currentRes ? currentRes.vKph.toFixed(2) : '--'} <span className="text-lg text-indigo-300 font-normal">km/h</span>
             </div>
-            <div className="h-px bg-indigo-500/30 my-4"></div>
+            <div className="h-px bg-indigo-500/30 my-3"></div>
             <h3 className="text-sm uppercase text-indigo-300 mb-1">Estimated Time</h3>
-            <div className="text-3xl font-mono text-white">
+            <div className="text-2xl font-mono text-white">
               {currentRes ? fmtTime(currentRes.time) : '--'}
             </div>
             {useSweat && currentRes && currentRes.loss > 0 && (
-              <div className="mt-4 pt-4 border-t border-indigo-500/20 flex justify-between items-center text-xs">
+              <div className="mt-3 pt-3 border-t border-indigo-500/20 flex justify-between items-center text-xs">
                 <span className="text-indigo-200">Weight Lost:</span>
                 <span className="font-mono font-bold text-white">{currentRes.loss.toFixed(2)} kg</span>
               </div>
             )}
           </div>
-
-          {/* Comparison Result */}
-          {compareSetup && compareRes && (
-            <div className="bg-dark-card p-4 rounded-xl border border-dark-border">
-              <div className="flex justify-between items-center mb-2">
-                <h3 className="text-sm font-bold text-gray-400">{compareSetup.name}</h3>
-                {timeDiff !== null && (
-                  <span className={`text-sm font-mono font-bold ${timeDiff > 0 ? 'text-green-400' : timeDiff < 0 ? 'text-red-400' : 'text-gray-400'}`}>
-                    {timeDiff > 0 ? '+' : ''}{Math.round(timeDiff)}s
-                  </span>
-                )}
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-400">Speed</span>
-                <span className="font-mono">{compareRes.vKph.toFixed(2)} km/h</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-400">Time</span>
-                <span className="font-mono">{fmtTime(compareRes.time)}</span>
-              </div>
-              {timeDiff !== null && Math.abs(timeDiff) > 1 && (
-                <p className="text-xs text-gray-500 mt-2">
-                  {timeDiff > 0
-                    ? `${selectedSetup?.name} is ${Math.round(timeDiff)}s faster`
-                    : `${compareSetup.name} is ${Math.round(Math.abs(timeDiff))}s faster`
-                  }
-                </p>
-              )}
-            </div>
-          )}
 
           {/* Sensitivity Table */}
           <div className="bg-dark-card rounded-xl border border-dark-border overflow-hidden">
