@@ -110,7 +110,6 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
               className="input-dark w-full"
-              placeholder={form.study_mode === 'averaging' ? 'e.g., Baseline CdA - January 2024' : 'e.g., Tire Pressure Test - January 2024'}
               autoFocus
             />
           </div>
@@ -152,7 +151,6 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
                     value={form.variable_label}
                     onChange={e => setForm({ ...form, variable_label: e.target.value })}
                     className="input-dark w-full"
-                    placeholder="e.g., Handlebar Width, Crank Length"
                   />
                 </div>
               )}
@@ -171,7 +169,6 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
                 value={form.mass}
                 onChange={e => setForm({ ...form, mass: e.target.value })}
                 className="input-dark w-full"
-                placeholder="80"
               />
               <p className="text-xs text-gray-500 mt-1">Rider + bike + gear</p>
             </div>
@@ -187,7 +184,6 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
                 value={form.drivetrain_efficiency}
                 onChange={e => setForm({ ...form, drivetrain_efficiency: e.target.value })}
                 className="input-dark w-full"
-                placeholder="0.97"
               />
               <p className="text-xs text-gray-500 mt-1">Usually 0.95-0.98</p>
             </div>
@@ -202,7 +198,6 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
               value={form.description}
               onChange={e => setForm({ ...form, description: e.target.value })}
               className="input-dark w-full h-20 resize-none"
-              placeholder="Notes about what you're testing..."
             />
           </div>
 

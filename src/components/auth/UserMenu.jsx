@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '../../hooks/useAuth.jsx'
+import { AlertDialog } from '../ui'
 
 export const UserMenu = () => {
   const { user, signOut, deleteAccount } = useAuth()
@@ -8,6 +9,7 @@ export const UserMenu = () => {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteText, setDeleteText] = useState('')
   const [deleting, setDeleting] = useState(false)
+  const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
   const menuRef = useRef(null)
 
   useEffect(() => {
@@ -150,7 +152,7 @@ export const UserMenu = () => {
                             try {
                               await deleteAccount()
                             } catch (err) {
-                              alert('Error deleting account: ' + err.message)
+                              setErrorDialog({ open: true, message: err.message })
                               setDeleting(false)
                             }
                           }}
@@ -172,6 +174,15 @@ export const UserMenu = () => {
           </div>
         </div>
       )}
+
+      {/* Error Alert Dialog */}
+      <AlertDialog
+        isOpen={errorDialog.open}
+        onClose={() => setErrorDialog({ open: false, message: '' })}
+        title="Error Deleting Account"
+        message={errorDialog.message}
+        variant="error"
+      />
     </div>
   )
 }

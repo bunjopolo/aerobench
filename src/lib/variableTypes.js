@@ -29,19 +29,9 @@ export const VARIABLE_TYPES = {
     id: 'position',
     label: 'Position',
     icon: '🚴',
-    inputType: 'dropdown',
-    options: [
-      { value: 'hoods', label: 'Hoods' },
-      { value: 'drops', label: 'Drops' },
-      { value: 'aero_bars', label: 'Aero Bars' },
-      { value: 'tt_position', label: 'TT Position' },
-      { value: 'sprint', label: 'Sprint Position' }
-    ],
+    inputType: 'text',
     description: 'Compare different riding positions',
-    formatValue: (v) => {
-      const opt = VARIABLE_TYPES.position.options.find(o => o.value === v.value_text)
-      return opt?.label || v.value_text || ''
-    }
+    formatValue: (v) => v.value_text || ''
   },
   custom: {
     id: 'custom',

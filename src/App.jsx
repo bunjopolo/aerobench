@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { AuthProvider, useAuth } from './hooks/useAuth.jsx'
+import { usePhysicsPresets } from './hooks/usePhysicsPresets'
 import { LoginPage } from './components/auth/LoginPage'
 import { UserMenu } from './components/auth/UserMenu'
 import { EstimatorTab } from './components/estimator/EstimatorTab'
@@ -8,14 +9,22 @@ import { StudiesTab } from './components/studies/StudiesTab'
 import { QuickTestTab } from './components/quicktest/QuickTestTab'
 import { GuideTab } from './components/guide/GuideTab'
 import { ValidationTab } from './components/validation/ValidationTab'
+import { HelpTab } from './components/help'
 import { PrivacyPolicy, TermsOfService, CookieNotice } from './components/legal'
 import { ContactModal } from './components/ui'
 
 const AppContent = () => {
   const { isAuthenticated, loading: authLoading } = useAuth()
+  const presetsHook = usePhysicsPresets()
   const [activeTab, setActiveTab] = useState('dashboard')
   const [legalPage, setLegalPage] = useState(null)
   const [showContact, setShowContact] = useState(false)
+  const [selectedStudyId, setSelectedStudyId] = useState(null)
+
+  const handleStudyClick = (studyId) => {
+    setSelectedStudyId(studyId)
+    setActiveTab('studies')
+  }
 
   if (authLoading) {
     return (
@@ -141,6 +150,19 @@ const AppContent = () => {
               </svg>
               Validation
             </button>
+            <button
+              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
+                activeTab === 'help'
+                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
+                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
+              }`}
+              onClick={() => setActiveTab('help')}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Help
+            </button>
           </div>
         </nav>
 
@@ -207,12 +229,13 @@ const AppContent = () => {
       <div className="flex-1 flex flex-col min-w-0 bg-dark-bg">
         {/* Content Area */}
         <div className="flex-1 relative overflow-auto">
-          {activeTab === 'dashboard' && <DashboardTab />}
-          {activeTab === 'studies' && <StudiesTab />}
-          {activeTab === 'quicktest' && <QuickTestTab />}
-          {activeTab === 'estimator' && <EstimatorTab />}
+          {activeTab === 'dashboard' && <DashboardTab onStudyClick={handleStudyClick} />}
+          {activeTab === 'studies' && <StudiesTab initialStudyId={selectedStudyId} onStudyOpened={() => setSelectedStudyId(null)} presetsHook={presetsHook} />}
+          {activeTab === 'quicktest' && <QuickTestTab presetsHook={presetsHook} />}
+          {activeTab === 'estimator' && <EstimatorTab presetsHook={presetsHook} />}
           {activeTab === 'guide' && <GuideTab />}
           {activeTab === 'validation' && <ValidationTab />}
+          {activeTab === 'help' && <HelpTab />}
         </div>
       </div>
 

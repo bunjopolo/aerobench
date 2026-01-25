@@ -69,15 +69,36 @@ export const StudyResults = ({ study, variations, onBack }) => {
   const crrMax = crrValues.length > 0 ? Math.max(...crrValues) : 0.01
   const crrPadding = (crrMax - crrMin) * 0.15
 
+  // Consistent color palette for configurations
+  const colorPalette = [
+    '#10b981', // emerald (best)
+    '#6366f1', // indigo
+    '#f59e0b', // amber
+    '#ec4899', // pink
+    '#14b8a6', // teal
+    '#8b5cf6', // violet
+    '#f97316', // orange
+    '#06b6d4', // cyan
+  ]
+
+  // Assign consistent colors to each variation
+  const getVariationColor = (variation, index) => {
+    if (variation.is_baseline) return '#6366f1' // Baseline always indigo
+    if (index === 0) return '#10b981' // Best always emerald
+    // Use palette for others, cycling if needed
+    const paletteIndex = (index - 1) % (colorPalette.length - 2) + 2
+    return colorPalette[paletteIndex]
+  }
+
+  const variationColors = rankedVariations.map((v, i) => getVariationColor(v, i))
+
   // Bar chart data
   const cdaChartData = {
     x: rankedVariations.map(v => v.name),
     y: rankedVariations.map(v => v.avg_cda),
     type: 'bar',
     marker: {
-      color: rankedVariations.map(v =>
-        v.is_baseline ? '#6366f1' : v.avg_cda === rankedVariations[0].avg_cda ? '#10b981' : '#64748b'
-      )
+      color: variationColors
     },
     error_y: {
       type: 'data',
@@ -98,9 +119,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
     y: rankedVariations.map(v => v.avg_crr),
     type: 'bar',
     marker: {
-      color: rankedVariations.map(v =>
-        v.is_baseline ? '#6366f1' : '#3b82f6'
-      )
+      color: variationColors
     },
     text: rankedVariations.map(v => v.avg_crr?.toFixed(5) || 'N/A'),
     textposition: 'inside',

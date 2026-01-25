@@ -2,7 +2,7 @@ import { useAuth } from '../../hooks/useAuth.jsx'
 import { useStudies } from '../../hooks/useStudies'
 import { getVariableType } from '../../lib/variableTypes'
 
-export const DashboardTab = () => {
+export const DashboardTab = ({ onStudyClick }) => {
   const { user } = useAuth()
   const { studies, loading: studiesLoading } = useStudies()
 
@@ -61,9 +61,10 @@ export const DashboardTab = () => {
               const varType = getVariableType(study.variable_type)
               const isAveraging = study.study_mode === 'averaging'
               return (
-                <div
+                <button
                   key={study.id}
-                  className="flex items-center justify-between p-4 bg-dark-bg rounded-lg border border-dark-border"
+                  onClick={() => onStudyClick?.(study.id)}
+                  className="w-full flex items-center justify-between p-4 bg-dark-bg rounded-lg border border-dark-border hover:border-brand-primary/50 transition-all text-left"
                 >
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
@@ -80,7 +81,10 @@ export const DashboardTab = () => {
                       <span>{new Date(study.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
-                </div>
+                  <svg className="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
               )
             })}
           </div>
@@ -95,28 +99,6 @@ export const DashboardTab = () => {
         </div>
       )}
 
-      {/* Tips */}
-      <div className="bg-gradient-to-r from-indigo-900/20 to-dark-card p-6 rounded-xl border border-indigo-500/30">
-        <h3 className="text-sm font-bold text-indigo-400 uppercase mb-3">Tips for Accurate Results</h3>
-        <ul className="space-y-2 text-sm text-gray-400">
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400">1.</span>
-            Use flat, out-and-back courses for best accuracy
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400">2.</span>
-            Aim for 3-5 runs per configuration to get reliable averages
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400">3.</span>
-            Test in calm wind conditions when possible
-          </li>
-          <li className="flex items-start gap-2">
-            <span className="text-indigo-400">4.</span>
-            Make sure your power meter is calibrated before testing
-          </li>
-        </ul>
-      </div>
     </div>
   )
 }

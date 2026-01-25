@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStudies } from '../../hooks/useStudies'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { getVariableType } from '../../lib/variableTypes'
@@ -38,11 +38,19 @@ const StudyCard = ({ study, onClick }) => {
   )
 }
 
-export const StudiesTab = () => {
+export const StudiesTab = ({ initialStudyId, onStudyOpened, presetsHook }) => {
   const { user } = useAuth()
   const { studies, loading, createStudy, deleteStudy } = useStudies()
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [viewingStudyId, setViewingStudyId] = useState(null)
+
+  // Handle navigation from Dashboard
+  useEffect(() => {
+    if (initialStudyId) {
+      setViewingStudyId(initialStudyId)
+      onStudyOpened?.()
+    }
+  }, [initialStudyId, onStudyOpened])
 
   if (!user) {
     return (
@@ -62,6 +70,7 @@ export const StudiesTab = () => {
           await deleteStudy(viewingStudyId)
           setViewingStudyId(null)
         }}
+        presetsHook={presetsHook}
       />
     )
   }

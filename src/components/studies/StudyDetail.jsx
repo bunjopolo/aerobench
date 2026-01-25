@@ -5,8 +5,10 @@ import { useRuns } from '../../hooks/useRuns'
 import { getVariableType, VARIABLE_TYPES } from '../../lib/variableTypes'
 import { RunAnalysis } from './RunAnalysis'
 import { StudyResults } from './StudyResults'
+import { ConfirmDialog } from '../ui'
+import { SavePresetModal } from '../presets'
 
-const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onEdit, onDelete, onAnalyze }) => {
+const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onEdit, onDelete, onAnalyze, onSavePreset }) => {
   const [showMenu, setShowMenu] = useState(false)
   const formattedValue = variableType.formatValue(variation)
   const hasData = variation.avg_cda !== null && variation.run_count > 0
@@ -46,17 +48,6 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
               <>
                 <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
                 <div className="absolute right-0 mt-1 w-44 bg-dark-card border border-dark-border rounded-lg shadow-xl z-20 py-1">
-                  {!isBaseline && (
-                    <button
-                      onClick={() => { onSetBaseline(); setShowMenu(false) }}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-dark-bg flex items-center gap-2"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                      Set as Baseline
-                    </button>
-                  )}
                   <button
                     onClick={() => { onEdit(); setShowMenu(false) }}
                     className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-dark-bg flex items-center gap-2"
@@ -66,6 +57,17 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
                     </svg>
                     Edit
                   </button>
+                  {hasData && onSavePreset && (
+                    <button
+                      onClick={() => { onSavePreset(); setShowMenu(false) }}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-dark-bg flex items-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                      </svg>
+                      Save as Preset
+                    </button>
+                  )}
                   <button
                     onClick={() => { onDelete(); setShowMenu(false) }}
                     className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-red-900/20 flex items-center gap-2"
@@ -116,9 +118,6 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
                   <span className="text-sm text-gray-500 font-normal">/{variation.total_runs}</span>
                 )}
               </div>
-              {variation.run_count < 3 && (
-                <div className="text-[10px] text-amber-500">Need more data</div>
-              )}
             </div>
           </div>
         ) : (
@@ -130,7 +129,7 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
       </div>
 
       {/* Action Footer */}
-      <div className="px-4 pb-4">
+      <div className="px-4 pb-4 space-y-2">
         <button
           onClick={onAnalyze}
           className="w-full btn-primary py-2.5 flex items-center justify-center gap-2 text-sm font-medium"
@@ -140,13 +139,43 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
           </svg>
           Add Run
         </button>
+        {!isBaseline && (
+          <button
+            onClick={onSetBaseline}
+            className="w-full py-2 flex items-center justify-center gap-2 text-sm font-medium text-gray-400 hover:text-white border border-dark-border hover:border-brand-primary/50 rounded-lg transition-all hover:bg-brand-primary/10"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            Set as Baseline
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
 // Simplified run card for averaging mode
-const RunCard = ({ run, onToggleValid, onDelete }) => {
+const RunCard = ({ run, onToggleValid, onDelete, onRename }) => {
+  const [isEditing, setIsEditing] = useState(false)
+  const [editName, setEditName] = useState(run.name || '')
+
+  const handleSave = () => {
+    if (editName.trim() && editName !== run.name) {
+      onRename(run.id, editName.trim())
+    }
+    setIsEditing(false)
+  }
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter') {
+      handleSave()
+    } else if (e.key === 'Escape') {
+      setEditName(run.name || '')
+      setIsEditing(false)
+    }
+  }
+
   return (
     <div className={`bg-dark-card rounded-lg border p-4 ${
       run.is_valid ? 'border-dark-border' : 'border-red-500/30 opacity-60'
@@ -154,16 +183,42 @@ const RunCard = ({ run, onToggleValid, onDelete }) => {
       <div className="flex items-center justify-between">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <h4 className="font-medium text-white truncate">{run.name || 'Untitled Run'}</h4>
+            {isEditing ? (
+              <input
+                type="text"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onBlur={handleSave}
+                onKeyDown={handleKeyDown}
+                className="input-dark text-sm py-1 px-2 w-48"
+                autoFocus
+              />
+            ) : (
+              <button
+                onClick={() => setIsEditing(true)}
+                className="font-medium text-white truncate hover:text-brand-primary transition-colors text-left"
+                title="Click to rename"
+              >
+                {run.name || 'Untitled Run'}
+              </button>
+            )}
             {!run.is_valid && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-400">
                 Excluded
               </span>
             )}
           </div>
-          <p className="text-xs text-gray-500 mt-1">
-            {run.ride_date ? new Date(run.ride_date).toLocaleDateString() : 'No date'}
-          </p>
+          <div className="flex items-center gap-2 mt-1">
+            {run.gpx_filename && (
+              <p className="text-[10px] text-gray-500 truncate max-w-[200px]" title={run.gpx_filename}>
+                {run.gpx_filename}
+              </p>
+            )}
+            <span className="text-[10px] text-gray-600">•</span>
+            <p className="text-[10px] text-gray-500">
+              {run.ride_date ? new Date(run.ride_date).toLocaleDateString() : 'No date'}
+            </p>
+          </div>
         </div>
 
         <div className="flex items-center gap-4">
@@ -260,7 +315,6 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
               value={form.value_number_front}
               onChange={e => setForm({ ...form, value_number_front: e.target.value })}
               className="input-dark w-full"
-              placeholder="80"
             />
           </div>
           <div>
@@ -270,7 +324,6 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
               value={form.value_number_rear}
               onChange={e => setForm({ ...form, value_number_rear: e.target.value })}
               className="input-dark w-full"
-              placeholder="85"
             />
           </div>
         </div>
@@ -298,7 +351,6 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
         value={form.value_text}
         onChange={e => setForm({ ...form, value_text: e.target.value })}
         className="input-dark w-full"
-        placeholder={variableType.placeholder}
       />
     )
   }
@@ -321,7 +373,6 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
               className="input-dark w-full"
-              placeholder="e.g., High Pressure Test"
               autoFocus
             />
           </div>
@@ -341,7 +392,6 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
               value={form.notes}
               onChange={e => setForm({ ...form, notes: e.target.value })}
               className="input-dark w-full h-20 resize-none"
-              placeholder="Any notes about this variation..."
             />
           </div>
 
@@ -422,7 +472,6 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
               value={form.value_number_front}
               onChange={e => setForm({ ...form, value_number_front: e.target.value })}
               className="input-dark w-full"
-              placeholder="80"
             />
           </div>
           <div>
@@ -432,7 +481,6 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
               value={form.value_number_rear}
               onChange={e => setForm({ ...form, value_number_rear: e.target.value })}
               className="input-dark w-full"
-              placeholder="85"
             />
           </div>
         </div>
@@ -460,7 +508,6 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
         value={form.value_text}
         onChange={e => setForm({ ...form, value_text: e.target.value })}
         className="input-dark w-full"
-        placeholder={variableType.placeholder}
       />
     )
   }
@@ -483,7 +530,6 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
               value={form.name}
               onChange={e => setForm({ ...form, name: e.target.value })}
               className="input-dark w-full"
-              placeholder="e.g., Aero Helmet Config"
               autoFocus
             />
           </div>
@@ -503,7 +549,6 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
               value={form.notes}
               onChange={e => setForm({ ...form, notes: e.target.value })}
               className="input-dark w-full h-20 resize-none"
-              placeholder="Any notes about this configuration..."
             />
           </div>
 
@@ -538,9 +583,10 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
 
 // Averaging mode view - simplified, no configurations
 const AveragingStudyView = ({ study, variation, onBack, onDelete, onAnalyze }) => {
-  const { runs, stats, toggleValid, deleteRun, refresh } = useRuns(variation?.id)
+  const { runs, stats, toggleValid, deleteRun, updateRun, refresh } = useRuns(variation?.id)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [showAnalysis, setShowAnalysis] = useState(false)
+  const [deleteRunDialog, setDeleteRunDialog] = useState({ open: false, runId: null, runName: '' })
 
   if (showAnalysis) {
     return (
@@ -555,10 +601,19 @@ const AveragingStudyView = ({ study, variation, onBack, onDelete, onAnalyze }) =
     )
   }
 
-  const handleDeleteRun = async (runId) => {
-    if (confirm('Delete this run?')) {
-      await deleteRun(runId)
+  const handleDeleteRun = (runId, runName) => {
+    setDeleteRunDialog({ open: true, runId, runName })
+  }
+
+  const confirmDeleteRun = async () => {
+    if (deleteRunDialog.runId) {
+      await deleteRun(deleteRunDialog.runId)
+      setDeleteRunDialog({ open: false, runId: null, runName: '' })
     }
+  }
+
+  const handleRenameRun = async (runId, newName) => {
+    await updateRun(runId, { name: newName })
   }
 
   return (
@@ -648,7 +703,8 @@ const AveragingStudyView = ({ study, variation, onBack, onDelete, onAnalyze }) =
                 key={run.id}
                 run={run}
                 onToggleValid={() => toggleValid(run.id)}
-                onDelete={() => handleDeleteRun(run.id)}
+                onDelete={() => handleDeleteRun(run.id, run.name)}
+                onRename={handleRenameRun}
               />
             ))}
           </div>
@@ -665,36 +721,32 @@ const AveragingStudyView = ({ study, variation, onBack, onDelete, onAnalyze }) =
         </div>
       )}
 
-      {/* Delete Confirmation */}
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-sm p-6">
-            <h3 className="text-lg font-bold text-white mb-2">Delete Study?</h3>
-            <p className="text-gray-400 mb-4">
-              This will permanently delete "{study.name}" and all its runs.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                className="btn-secondary flex-1"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={onDelete}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Delete Study Confirmation */}
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={onDelete}
+        title="Delete Study"
+        message={`This will permanently delete "${study.name}" and all its runs. This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
+
+      {/* Delete Run Confirmation */}
+      <ConfirmDialog
+        isOpen={deleteRunDialog.open}
+        onClose={() => setDeleteRunDialog({ open: false, runId: null, runName: '' })}
+        onConfirm={confirmDeleteRun}
+        title="Delete Run"
+        message={`Are you sure you want to delete "${deleteRunDialog.runName}"? This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
     </div>
   )
 }
 
-export const StudyDetail = ({ studyId, onBack, onDelete }) => {
+export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
   const { study, loading: studyLoading } = useStudy(studyId)
   const { variations, loading: variationsLoading, createVariation, updateVariation, deleteVariation, setBaseline, refresh } = useVariations(studyId)
 
@@ -703,6 +755,8 @@ export const StudyDetail = ({ studyId, onBack, onDelete }) => {
   const [analyzingVariation, setAnalyzingVariation] = useState(null)
   const [showResults, setShowResults] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [deleteVariationDialog, setDeleteVariationDialog] = useState({ open: false, variationId: null, variationName: '' })
+  const [presetVariation, setPresetVariation] = useState(null)
 
   if (studyLoading || variationsLoading) {
     return (
@@ -763,9 +817,14 @@ export const StudyDetail = ({ studyId, onBack, onDelete }) => {
     await onDelete()
   }
 
-  const handleDeleteVariation = async (variationId) => {
-    if (confirm('Delete this configuration and all its runs?')) {
-      await deleteVariation(variationId)
+  const handleDeleteVariation = (variationId, variationName) => {
+    setDeleteVariationDialog({ open: true, variationId, variationName })
+  }
+
+  const confirmDeleteVariation = async () => {
+    if (deleteVariationDialog.variationId) {
+      await deleteVariation(deleteVariationDialog.variationId)
+      setDeleteVariationDialog({ open: false, variationId: null, variationName: '' })
     }
   }
 
@@ -837,8 +896,9 @@ export const StudyDetail = ({ studyId, onBack, onDelete }) => {
                 isBaseline={variation.is_baseline}
                 onSetBaseline={() => setBaseline(variation.id)}
                 onEdit={() => setEditingVariation(variation)}
-                onDelete={() => handleDeleteVariation(variation.id)}
+                onDelete={() => handleDeleteVariation(variation.id, variation.name)}
                 onAnalyze={() => setAnalyzingVariation(variation)}
+                onSavePreset={presetsHook ? () => setPresetVariation(variation) : null}
               />
             ))}
           </div>
@@ -876,30 +936,41 @@ export const StudyDetail = ({ studyId, onBack, onDelete }) => {
         />
       )}
 
-      {/* Delete Confirmation */}
-      {showDeleteConfirm && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-sm p-6">
-            <h3 className="text-lg font-bold text-white mb-2">Delete Study?</h3>
-            <p className="text-gray-400 mb-4">
-              This will permanently delete "{study.name}" and all its configurations and runs.
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowDeleteConfirm(false)}
-                className="btn-secondary flex-1"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleDelete}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-              >
-                Delete
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Delete Study Confirmation */}
+      <ConfirmDialog
+        isOpen={showDeleteConfirm}
+        onClose={() => setShowDeleteConfirm(false)}
+        onConfirm={handleDelete}
+        title="Delete Study"
+        message={`This will permanently delete "${study.name}" and all its configurations and runs. This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
+
+      {/* Delete Configuration Confirmation */}
+      <ConfirmDialog
+        isOpen={deleteVariationDialog.open}
+        onClose={() => setDeleteVariationDialog({ open: false, variationId: null, variationName: '' })}
+        onConfirm={confirmDeleteVariation}
+        title="Delete Configuration"
+        message={`Are you sure you want to delete "${deleteVariationDialog.variationName}" and all its runs? This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
+
+      {/* Save Preset Modal */}
+      {presetVariation && presetsHook && (
+        <SavePresetModal
+          values={{
+            cda: presetVariation.avg_cda,
+            crr: presetVariation.avg_crr,
+            mass: study.mass,
+            efficiency: study.efficiency,
+            rho: 1.225  // Default air density, studies don't store this
+          }}
+          onSave={presetsHook.createPreset}
+          onClose={() => setPresetVariation(null)}
+        />
       )}
     </div>
   )

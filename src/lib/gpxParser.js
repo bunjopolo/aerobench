@@ -7,6 +7,7 @@ export const parseGPX = (xmlString) => {
   const trk = xml.getElementsByTagName("trkpt")
   const pts = []
   let cum = 0, pLat = null, pLon = null, st = null
+  let powerPointCount = 0  // Track how many points have power data
 
   for (let i = 0; i < trk.length; i++) {
     const pt = trk[i]
@@ -26,7 +27,10 @@ export const parseGPX = (xmlString) => {
       const w = ext.getElementsByTagName("watts")[0] ||
                 ext.getElementsByTagName("power")[0] ||
                 ext.getElementsByTagName("ns3:watts")[0]
-      if (w) pwr = parseFloat(w.textContent)
+      if (w) {
+        pwr = parseFloat(w.textContent)
+        if (pwr > 0) powerPointCount++
+      }
     }
 
     let ds = 0, b = 0
@@ -45,6 +49,9 @@ export const parseGPX = (xmlString) => {
   const vSm = savgol(vRaw)
   const acc = vSm.map((v, i) => (i === 0 || i === vSm.length - 1) ? 0 : (vSm[i + 1] - vSm[i - 1]) / (t[i + 1] - t[i - 1]))
 
+  // Determine if file has meaningful power data (at least 50% of points)
+  const hasPowerData = pts.length > 0 && powerPointCount / pts.length > 0.5
+
   return {
     data: {
       dist: pts.map(d => d.cum),
@@ -57,18 +64,21 @@ export const parseGPX = (xmlString) => {
       b: pts.map(d => d.b),
       ds: pts.map(d => d.ds)
     },
-    startTime: st
+    startTime: st,
+    hasPowerData
   }
 }
 
-// Parse route GPX for estimator
+// Parse route GPX for estimator (enhanced with cumulative distances and bearings)
 export const parseRouteGPX = (xmlString) => {
   const parser = new DOMParser()
   const xml = parser.parseFromString(xmlString, "text/xml")
   const trk = xml.getElementsByTagName("trkpt")
   const segments = []
+  const cumDist = []  // Cumulative distance at end of each segment
   let totalDist = 0
   let gain = 0
+  let loss = 0
   let pLat = null, pLon = null, pEle = null
 
   for (let i = 0; i < trk.length; i++) {
@@ -80,12 +90,33 @@ export const parseRouteGPX = (xmlString) => {
     if (pLat !== null) {
       const d = haversine(pLat, pLon, lat, lon)
       const de = ele - pEle
+
       if (d >= 1) {
+        // Calculate grade
         let grade = (de / d) * 100
         grade = Math.max(-50, Math.min(50, grade))
-        segments.push({ d, g: grade, ele: (ele + pEle) / 2 })
+
+        // Calculate bearing (direction of travel) in degrees
+        // 0 = North, 90 = East, 180 = South, 270 = West
+        const bearing = calcBearing(
+          pLat * Math.PI / 180,
+          pLon * Math.PI / 180,
+          lat * Math.PI / 180,
+          lon * Math.PI / 180
+        )
+
+        segments.push({
+          d,              // segment distance in meters
+          g: grade,       // gradient in percent
+          ele: (ele + pEle) / 2,  // average elevation for air density
+          bearing         // direction of travel in degrees
+        })
+
         totalDist += d
+        cumDist.push(totalDist)
+
         if (de > 0) gain += de
+        else loss += Math.abs(de)
       }
     }
     pLat = lat
@@ -93,5 +124,11 @@ export const parseRouteGPX = (xmlString) => {
     pEle = ele
   }
 
-  return { segments, totalDist, gain }
+  return {
+    segments,
+    cumDist,      // Cumulative distance array for interpolation
+    totalDist,
+    gain,
+    loss
+  }
 }

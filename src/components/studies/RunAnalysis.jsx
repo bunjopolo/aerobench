@@ -1,10 +1,12 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { parseGPX } from '../../lib/gpxParser'
-import { solveCdaCrr, removeOutliers, safeNum } from '../../lib/physics'
+import { solveCdaCrr, safeNum, GRAVITY } from '../../lib/physics'
 import { lowPassFilter } from '../../lib/preprocessing'
 import { useRuns } from '../../hooks/useRuns'
 import { getVariableType } from '../../lib/variableTypes'
+import { calculateAirDensity } from '../../lib/airDensity'
+import { ConfirmDialog, AlertDialog } from '../ui'
 
 export const RunAnalysis = ({ variation, study, onBack }) => {
   const { runs, stats, createRun, toggleValid, deleteRun, refresh } = useRuns(variation.id)
@@ -13,7 +15,29 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   // Get physics from base setup or defaults
   const mass = study.mass || 80
   const eff = study.drivetrain_efficiency || 0.97
-  const rho = 1.225 // Sea level air density
+  const [rho, setRho] = useState(1.225)
+
+  // Air density calculator state
+  const [showRhoCalc, setShowRhoCalc] = useState(false)
+  const [rhoTemp, setRhoTemp] = useState(20) // °C
+  const [rhoElevation, setRhoElevation] = useState(0) // m
+  const [rhoPressure, setRhoPressure] = useState(1013.25) // hPa
+  const [rhoHumidity, setRhoHumidity] = useState(50) // %
+  const [rhoUseElevation, setRhoUseElevation] = useState(true)
+
+  // Calculate air density from current state values
+  const getCalculatedRho = () => {
+    return calculateAirDensity({
+      temperature: rhoTemp,
+      humidity: rhoHumidity,
+      elevation: rhoUseElevation ? rhoElevation : undefined,
+      pressure: rhoUseElevation ? null : rhoPressure
+    })
+  }
+
+  const applyCalculatedRho = () => {
+    setRho(getCalculatedRho())
+  }
 
   // CdA/Crr state
   const [cda, setCda] = useState(0.32)
@@ -30,14 +54,9 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [range, setRange] = useState([0, 100])
 
   // Solver
-  const [mode, setMode] = useState('global')
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
-  const [segs, setSegs] = useState([])
-  const [segLen, setSegLen] = useState(180)
   const [maxIterations, setMaxIterations] = useState(500)
-  const [segStats, setSegStats] = useState(null)
-  const [segRange, setSegRange] = useState(null)
   const [saved, setSaved] = useState(false)
 
   // Display
@@ -47,6 +66,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [filterGps, setFilterGps] = useState(false)
   const [filterVirtual, setFilterVirtual] = useState(false)
   const [filterIntensity, setFilterIntensity] = useState(5)
+
+  // Dialog state
+  const [deleteDialog, setDeleteDialog] = useState({ open: false, runId: null, runName: '' })
+  const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
 
   // File Handler
   const onFile = (e) => {
@@ -59,9 +82,6 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       const result = parseGPX(ev.target.result)
       setData(result.data)
       setStartTime(result.startTime)
-      setSegs([])
-      setSegStats(null)
-      setSegRange(null)
     }
     r.readAsText(f)
   }
@@ -74,18 +94,13 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     setWDir(0)
     setOffset(0)
     setRange([0, 100])
-    setMode('global')
-    setSegs([])
-    setSegLen(180)
     setMaxIterations(500)
-    setSegStats(null)
-    setSegRange(null)
     setFilterGps(false)
     setFilterVirtual(false)
     setFilterIntensity(5)
   }
 
-  // Simulation calculation
+  // Simulation calculation - compute full virtual elevation for display
   const sim = useMemo(() => {
     if (!data) return null
     const { pwr, v, a, ds, ele, b } = data
@@ -96,31 +111,17 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       return { vEle: [], err: [], sIdx, eIdx, rmse: 0, anomalies: [], emptyRange: true }
     }
 
+    // Compute virtual elevation for FULL dataset (for rangeslider display)
     const vEle = new Array(pwr.length).fill(0)
     const err = new Array(pwr.length).fill(0)
-    vEle[sIdx] = ele[sIdx]
-    let cur = ele[sIdx]
-
-    const segMap = new Array(pwr.length).fill(null)
-    if (mode === 'beta' && segs.length > 0) {
-      segs.forEach(s => {
-        for (let k = s.s; k < s.e; k++) if (k < pwr.length) segMap[k] = { cda: s.cda, crr: s.crr }
-      })
-    }
+    vEle[0] = ele[0]
+    let cur = ele[0]
 
     const iOff = Math.round(offset)
     const wRad = wDir * (Math.PI / 180)
-    let sqSum = 0, cnt = 0
-    const GRAVITY = 9.81
 
-    let eleSum = 0
-    for (let i = sIdx; i < eIdx; i++) {
-      eleSum += ele[i]
-    }
-    const eleMean = eleSum / (eIdx - sIdx)
-    let ssTot = 0
-
-    for (let i = sIdx; i < eIdx; i++) {
+    // Calculate full virtual elevation
+    for (let i = 0; i < pwr.length; i++) {
       const vg = Math.max(0.1, v[i])
       let pi = i - iOff
       if (pi < 0) pi = 0
@@ -130,23 +131,28 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       const rh = rho * Math.exp(-ele[i] / 9000)
       const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
 
-      let lCda = cda, lCrr = crr
-      if (mode === 'beta' && segMap[i]) {
-        lCda = segMap[i].cda
-        lCrr = segMap[i].crr
-      }
-
-      const fa = 0.5 * rh * lCda * va * va * Math.sign(va)
+      const fa = 0.5 * rh * cda * va * va * Math.sign(va)
       const ft = pw / vg
-      const fr = mass * GRAVITY * lCrr
+      const fr = mass * GRAVITY * crr
       const fac = mass * a[i]
 
-      cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+      if (i > 0) {
+        cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+      }
       vEle[i] = cur
+      err[i] = cur - ele[i]
+    }
 
-      const d = cur - ele[i]
-      err[i] = d
-      sqSum += d * d
+    // Calculate RMSE and R² only within the selected range
+    let sqSum = 0, cnt = 0, ssTot = 0
+    let eleSum = 0
+    for (let i = sIdx; i < eIdx; i++) {
+      eleSum += ele[i]
+    }
+    const eleMean = eleSum / (eIdx - sIdx)
+
+    for (let i = sIdx; i < eIdx; i++) {
+      sqSum += err[i] * err[i]
       ssTot += (ele[i] - eleMean) ** 2
       cnt++
     }
@@ -155,71 +161,16 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
 
     return { vEle, err, sIdx, eIdx, rmse, r2 }
-  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range, segs, mode])
+  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
 
   // Solvers
   const runGlobal = () => {
     if (!data) return
     setBusy(true)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, false, maxIterations)
+      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
       setCda(res.cda)
       setCrr(res.crr)
-      setBusy(false)
-    }, 50)
-  }
-
-  const runSeg = () => {
-    if (!data) return
-    setBusy(true)
-    setTimeout(() => {
-      const s = sim.sIdx, e = sim.eIdx
-      const sz = Math.max(10, Math.floor(segLen)) || 180
-      let rawSegs = []
-      let i
-
-      for (i = s; i < e - sz; i += sz) {
-        const r = solveCdaCrr(data, i, i + sz, cda, crr, mass, eff, rho, offset, wSpd, wDir, true, maxIterations)
-        if (r.cda > 0.1 && r.cda < 0.6 && r.crr > 0.001 && r.crr < 0.015) {
-          rawSegs.push({ s: i, e: i + sz, ...r })
-        }
-      }
-      if (i < e && (e - i) >= 10) {
-        const r = solveCdaCrr(data, i, e, cda, crr, mass, eff, rho, offset, wSpd, wDir, true, maxIterations)
-        if (r.cda > 0.1 && r.cda < 0.6 && r.crr > 0.001 && r.crr < 0.015) {
-          rawSegs.push({ s: i, e: e, ...r })
-        }
-      }
-
-      const minGradeVar = 0.5
-      let filteredSegs = rawSegs.filter(seg => seg.gradeVar >= minGradeVar)
-      const usedMinFilter = filteredSegs.length >= 3
-      if (!usedMinFilter) filteredSegs = rawSegs
-
-      let cleanSegs = removeOutliers(filteredSegs, 'cda')
-      cleanSegs = removeOutliers(cleanSegs, 'crr')
-      if (cleanSegs.length < 3 && filteredSegs.length >= 3) cleanSegs = filteredSegs
-
-      setSegs(cleanSegs)
-      setSegRange([...range])
-
-      if (cleanSegs.length > 0) {
-        const totalQuality = cleanSegs.reduce((a, b) => a + b.quality, 0)
-        const weightedCda = cleanSegs.reduce((a, b) => a + b.cda * b.quality, 0) / totalQuality
-        const weightedCrr = cleanSegs.reduce((a, b) => a + b.crr * b.quality, 0) / totalQuality
-
-        setSegStats({
-          n: cleanSegs.length,
-          rejected: rawSegs.length - cleanSegs.length,
-          weighted: { cda: weightedCda, crr: weightedCrr }
-        })
-
-        setCda(weightedCda)
-        setCrr(weightedCrr)
-      } else {
-        setSegStats(null)
-      }
-
       setBusy(false)
     }, 50)
   }
@@ -247,8 +198,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   // Save run
   const saveRun = async () => {
     try {
+      const runNumber = runs.length + 1
       await createRun({
-        name: fileName || 'Run',
+        name: `Run ${runNumber}`,
+        gpx_filename: fileName || null,
         fitted_cda: cda,
         fitted_crr: crr,
         rmse: sim?.rmse || null,
@@ -266,12 +219,46 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
         resetAnalysis()
       }, 1500)
     } catch (err) {
-      alert('Error saving: ' + err.message)
+      setErrorDialog({ open: true, message: err.message })
     }
   }
 
-  // Chart layout
-  const layout = {
+  // Calculate distance range from percentage range
+  const distanceRange = useMemo(() => {
+    if (!data) return [0, 0]
+    const maxDist = data.dist[data.dist.length - 1]
+    return [
+      (range[0] / 100) * maxDist,
+      (range[1] / 100) * maxDist
+    ]
+  }, [data, range])
+
+  // Handle rangeslider changes
+  const handleRelayout = useCallback((eventData) => {
+    if (!data) return
+    const maxDist = data.dist[data.dist.length - 1]
+
+    if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {
+      const newStart = Math.max(0, eventData['xaxis.range[0]'])
+      const newEnd = Math.min(maxDist, eventData['xaxis.range[1]'])
+      const startPct = Math.round((newStart / maxDist) * 100)
+      const endPct = Math.round((newEnd / maxDist) * 100)
+      if (startPct !== range[0] || endPct !== range[1]) {
+        setRange([Math.max(0, startPct), Math.min(100, endPct)])
+      }
+    }
+    if (eventData['xaxis.range']) {
+      const [newStart, newEnd] = eventData['xaxis.range']
+      const startPct = Math.round((Math.max(0, newStart) / maxDist) * 100)
+      const endPct = Math.round((Math.min(maxDist, newEnd) / maxDist) * 100)
+      if (startPct !== range[0] || endPct !== range[1]) {
+        setRange([Math.max(0, startPct), Math.min(100, endPct)])
+      }
+    }
+  }, [data, range])
+
+  // Chart layout with rangeslider
+  const layout = useMemo(() => ({
     autosize: true,
     paper_bgcolor: '#0f172a',
     plot_bgcolor: '#0f172a',
@@ -280,17 +267,34 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     grid: { rows: 3, columns: 1, pattern: 'independent' },
     showlegend: true,
     legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
-    xaxis: { title: 'Distance (m)', gridcolor: '#1e293b', anchor: 'y3' },
-    yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.68, 1] },
-    yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', domain: [0.36, 0.62] },
-    yaxis3: { title: 'Power (W)', gridcolor: '#1e293b', domain: [0, 0.30] },
+    xaxis: {
+      title: 'Distance (m)',
+      gridcolor: '#1e293b',
+      anchor: 'y3',
+      range: distanceRange,
+      rangeslider: {
+        visible: true,
+        thickness: 0.08,
+        bgcolor: '#1e293b',
+        bordercolor: '#334155',
+        borderwidth: 1
+      }
+    },
+    yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.55, 1] },
+    yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', domain: [0.30, 0.50] },
+    yaxis3: { title: 'Power (W)', gridcolor: '#1e293b', domain: [0.08, 0.26] },
     shapes: [],
     annotations: []
+  }), [distanceRange])
+
+  const handleDeleteRun = (runId, runName) => {
+    setDeleteDialog({ open: true, runId, runName })
   }
 
-  const handleDeleteRun = async (runId) => {
-    if (confirm('Delete this run?')) {
-      await deleteRun(runId)
+  const confirmDeleteRun = async () => {
+    if (deleteDialog.runId) {
+      await deleteRun(deleteDialog.runId)
+      setDeleteDialog({ open: false, runId: null, runName: '' })
     }
   }
 
@@ -371,7 +375,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     {run.is_valid ? '✓' : '✗'}
                   </button>
                   <button
-                    onClick={() => handleDeleteRun(run.id)}
+                    onClick={() => handleDeleteRun(run.id, run.name)}
                     className="p-1 text-gray-400 hover:text-red-400"
                   >
                     <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -406,48 +410,15 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             {/* Solver */}
             <div className="card">
               <h3 className="label-sm mb-3">Solver</h3>
-              <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-3">
-                <button onClick={() => setMode('global')} className={`px-3 py-1 rounded text-xs font-medium flex-1 ${mode === 'global' ? 'bg-slate-600 text-white' : 'text-gray-400'}`}>Global</button>
-                <button onClick={() => setMode('beta')} className={`px-3 py-1 rounded text-xs font-medium flex-1 ${mode === 'beta' ? 'bg-emerald-700 text-white' : 'text-gray-400'}`}>Segmented</button>
-              </div>
 
               <div className="mb-3">
                 <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
                 <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
               </div>
 
-              {mode === 'global' ? (
-                <button onClick={runGlobal} disabled={busy} className="btn-primary w-full">
-                  {busy ? 'Optimizing...' : 'Auto-Fit'}
-                </button>
-              ) : (
-                <>
-                  <div className="mb-2">
-                    <label className="text-[10px] text-gray-500 mb-1 block">Segment Length</label>
-                    <input type="number" value={segLen} onChange={e => setSegLen(safeNum(e.target.value, segLen))} className="input-dark w-full" />
-                  </div>
-                  <button onClick={runSeg} disabled={busy} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded font-medium text-xs transition-colors">
-                    {busy ? 'Crunching...' : 'Run Segments'}
-                  </button>
-
-                  {segs.length > 0 && segStats && (
-                    <div className="bg-dark-input p-3 rounded text-[10px] border border-dark-border mt-2">
-                      <div className="flex justify-between mb-2">
-                        <span className="text-gray-400">Valid Segments</span>
-                        <span className="text-white font-bold">{segStats.n}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-green-400">Weighted CdA</span>
-                        <span className="text-green-400 font-mono">{segStats.weighted.cda.toFixed(5)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-blue-400">Weighted Crr</span>
-                        <span className="text-blue-400 font-mono">{segStats.weighted.crr.toFixed(5)}</span>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
+              <button onClick={runGlobal} disabled={busy} className="btn-primary w-full">
+                {busy ? 'Optimizing...' : 'Auto-Fit'}
+              </button>
             </div>
 
             {/* Fitted Values */}
@@ -521,6 +492,110 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 </div>
               </div>
 
+              {/* Air Density */}
+              <div className="pt-3 border-t border-dark-border mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-gray-400">Air Density (kg/m³)</span>
+                  <button
+                    onClick={() => setShowRhoCalc(!showRhoCalc)}
+                    className="text-[10px] text-indigo-400 hover:text-indigo-300"
+                  >
+                    {showRhoCalc ? 'Hide' : 'Calculator'}
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={rho}
+                  onChange={e => setRho(safeNum(e.target.value, rho))}
+                  className="input-dark w-full"
+                />
+
+                {showRhoCalc && (
+                  <div className="mt-3 p-3 bg-dark-bg rounded border border-dark-border space-y-3">
+                    <p className="text-[10px] text-gray-400 font-medium">Calculate from conditions:</p>
+
+                    <div>
+                      <label className="text-[10px] text-gray-500 mb-1 block">Temperature (°C)</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={rhoTemp}
+                        onChange={e => setRhoTemp(safeNum(e.target.value, rhoTemp))}
+                        className="input-dark w-full"
+                      />
+                    </div>
+
+                    <div>
+                      <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-2">
+                        <button
+                          onClick={() => setRhoUseElevation(true)}
+                          className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                        >
+                          Elevation
+                        </button>
+                        <button
+                          onClick={() => setRhoUseElevation(false)}
+                          className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                        >
+                          Pressure
+                        </button>
+                      </div>
+
+                      {rhoUseElevation ? (
+                        <div>
+                          <label className="text-[10px] text-gray-500 mb-1 block">Elevation (m)</label>
+                          <input
+                            type="number"
+                            step="1"
+                            value={rhoElevation}
+                            onChange={e => setRhoElevation(safeNum(e.target.value, rhoElevation))}
+                            className="input-dark w-full"
+                          />
+                        </div>
+                      ) : (
+                        <div>
+                          <label className="text-[10px] text-gray-500 mb-1 block">Pressure (hPa)</label>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={rhoPressure}
+                            onChange={e => setRhoPressure(safeNum(e.target.value, rhoPressure))}
+                            className="input-dark w-full"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] text-gray-500 mb-1 block">Relative Humidity (%)</label>
+                      <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        max="100"
+                        value={rhoHumidity}
+                        onChange={e => setRhoHumidity(safeNum(e.target.value, rhoHumidity))}
+                        className="input-dark w-full"
+                      />
+                    </div>
+
+                    <div className="pt-2 border-t border-dark-border">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-[10px] text-gray-400">Calculated:</span>
+                        <span className="text-sm font-mono font-bold text-cyan-400">{getCalculatedRho()} kg/m³</span>
+                      </div>
+                      <button
+                        onClick={applyCalculatedRho}
+                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 rounded text-xs font-medium transition-colors"
+                      >
+                        Apply
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Low-pass Filter */}
               <div className="pt-3 border-t border-dark-border">
                 <span className="text-xs text-gray-400 mb-2 block">Low-pass Filter</span>
@@ -579,19 +654,19 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
       {/* Chart Area */}
       <div className="flex-1 flex flex-col">
-        {/* Crop Controls */}
+        {/* Chart Controls */}
         {data && (
-          <div className="flex items-center gap-6 px-6 py-3 border-b border-dark-border bg-dark-card/50">
-            <span className="text-sm font-bold text-white uppercase tracking-wider">Crop Range</span>
+          <div className="flex items-center gap-6 px-6 py-2 border-b border-dark-border bg-dark-card/50">
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400">Start</span>
-              <input type="range" min="0" max="100" value={range[0]} onChange={e => setRange([Math.min(parseInt(e.target.value), range[1] - 1), range[1]])} className="w-32 accent-brand-primary" />
-              <span className="text-xs font-mono text-brand-accent w-10">{range[0]}%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400">End</span>
-              <input type="range" min="0" max="100" value={range[1]} onChange={e => setRange([range[0], Math.max(parseInt(e.target.value), range[0] + 1)])} className="w-32 accent-brand-primary" />
-              <span className="text-xs font-mono text-brand-accent w-10">{range[1]}%</span>
+              <span className="text-xs text-gray-400">Range:</span>
+              <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
+              <button
+                onClick={() => setRange([0, 100])}
+                className="text-[10px] text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                title="Reset to full range"
+              >
+                Reset
+              </button>
             </div>
             {(filterGps || filterVirtual) && (
               <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
@@ -624,31 +699,27 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             sim && sim.emptyRange ? (
               <div className="flex flex-col items-center justify-center h-full text-yellow-500 space-y-4">
                 <p className="text-lg font-medium">Range too narrow</p>
-                <p className="text-sm text-gray-500">Adjust the crop sliders</p>
+                <p className="text-sm text-gray-500">Use the rangeslider below the chart</p>
               </div>
             ) : (
               <Plot
                 data={(() => {
-                  const distSlice = data.dist.slice(sim.sIdx, sim.eIdx)
-                  const eleSlice = data.ele.slice(sim.sIdx, sim.eIdx)
-                  const vEleSlice = sim.vEle.slice(sim.sIdx, sim.eIdx)
-                  const errSlice = sim.err.slice(sim.sIdx, sim.eIdx)
-                  const pwrSlice = data.pwr.slice(sim.sIdx, sim.eIdx)
-
-                  const displayEle = filterGps ? lowPassFilter(eleSlice, filterIntensity) : eleSlice
-                  const displayVEle = filterVirtual ? lowPassFilter(vEleSlice, filterIntensity) : vEleSlice
+                  // Use full data for rangeslider visibility
+                  const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
+                  const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
 
                   return [
-                    { x: distSlice, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
-                    { x: distSlice, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
-                    { x: distSlice, y: errSlice, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
-                    { x: distSlice, y: pwrSlice, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }
+                    { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
+                    { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
+                    { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
+                    { x: data.dist, y: data.pwr, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }
                   ]
                 })()}
                 layout={layout}
+                onRelayout={handleRelayout}
                 useResizeHandler={true}
                 style={{ width: '100%', height: '100%' }}
-                config={{ displayModeBar: false, responsive: true }}
+                config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
               />
             )
           ) : (
@@ -659,6 +730,26 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
           )}
         </div>
       </div>
+
+      {/* Delete Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={deleteDialog.open}
+        onClose={() => setDeleteDialog({ open: false, runId: null, runName: '' })}
+        onConfirm={confirmDeleteRun}
+        title="Delete Run"
+        message={`Are you sure you want to delete "${deleteDialog.runName}"? This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
+
+      {/* Error Alert Dialog */}
+      <AlertDialog
+        isOpen={errorDialog.open}
+        onClose={() => setErrorDialog({ open: false, message: '' })}
+        title="Error Saving"
+        message={errorDialog.message}
+        variant="error"
+      />
     </div>
   )
 }

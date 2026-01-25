@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useAnalyses } from '../../hooks/useAnalyses'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { ConfirmDialog, AlertDialog } from '../ui'
 
 // Surface type options
 const SURFACE_OPTIONS = [
@@ -25,6 +26,8 @@ const SetupDetail = ({ setup, onBack, onSelectSetup, isSelected, onRefresh, upda
   const [editing, setEditing] = useState(false)
   const [editingAnalysisId, setEditingAnalysisId] = useState(null)
   const [editingAnalysisName, setEditingAnalysisName] = useState('')
+  const [deleteSetupDialog, setDeleteSetupDialog] = useState(false)
+  const [deleteAnalysisDialog, setDeleteAnalysisDialog] = useState({ open: false, analysisId: null, analysisName: '' })
   const [form, setForm] = useState({
     name: setup.name || '',
     description: setup.description || '',
@@ -55,10 +58,24 @@ const SetupDetail = ({ setup, onBack, onSelectSetup, isSelected, onRefresh, upda
     onRefresh()
   }
 
-  const handleDelete = async () => {
-    if (confirm('Delete this setup and all its analyses?')) {
-      await deleteSetup(setup.id)
-      onBack()
+  const handleDelete = () => {
+    setDeleteSetupDialog(true)
+  }
+
+  const confirmDeleteSetup = async () => {
+    await deleteSetup(setup.id)
+    setDeleteSetupDialog(false)
+    onBack()
+  }
+
+  const handleDeleteAnalysis = (analysisId, analysisName) => {
+    setDeleteAnalysisDialog({ open: true, analysisId, analysisName })
+  }
+
+  const confirmDeleteAnalysis = async () => {
+    if (deleteAnalysisDialog.analysisId) {
+      await deleteAnalysis(deleteAnalysisDialog.analysisId)
+      setDeleteAnalysisDialog({ open: false, analysisId: null, analysisName: '' })
     }
   }
 
@@ -383,11 +400,7 @@ const SetupDetail = ({ setup, onBack, onSelectSetup, isSelected, onRefresh, upda
                   </div>
                 </div>
                 <button
-                  onClick={() => {
-                    if (confirm('Delete this analysis?')) {
-                      deleteAnalysis(analysis.id)
-                    }
-                  }}
+                  onClick={() => handleDeleteAnalysis(analysis.id, analysis.name || 'this analysis')}
                   className="text-gray-500 hover:text-red-400 transition-colors p-1"
                   title="Delete analysis"
                 >
@@ -405,6 +418,28 @@ const SetupDetail = ({ setup, onBack, onSelectSetup, isSelected, onRefresh, upda
           </div>
         )}
       </div>
+
+      {/* Delete Setup Confirmation */}
+      <ConfirmDialog
+        isOpen={deleteSetupDialog}
+        onClose={() => setDeleteSetupDialog(false)}
+        onConfirm={confirmDeleteSetup}
+        title="Delete Setup"
+        message={`Are you sure you want to delete "${setup.name}" and all its analyses? This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
+
+      {/* Delete Analysis Confirmation */}
+      <ConfirmDialog
+        isOpen={deleteAnalysisDialog.open}
+        onClose={() => setDeleteAnalysisDialog({ open: false, analysisId: null, analysisName: '' })}
+        onConfirm={confirmDeleteAnalysis}
+        title="Delete Analysis"
+        message={`Are you sure you want to delete "${deleteAnalysisDialog.analysisName}"? This action cannot be undone.`}
+        confirmText="Delete"
+        variant="danger"
+      />
     </div>
   )
 }
@@ -413,6 +448,7 @@ export const SetupsTab = ({ selectedSetupId, onSelectSetup, setups, loading, cre
   const { user } = useAuth()
   const [viewingSetup, setViewingSetup] = useState(null)
   const [showNewForm, setShowNewForm] = useState(false)
+  const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
   const [newForm, setNewForm] = useState({
     name: '',
     bike_name: '',
@@ -444,7 +480,7 @@ export const SetupsTab = ({ selectedSetupId, onSelectSetup, setups, loading, cre
       onSelectSetup(created.id)
       setViewingSetup(created)
     } catch (err) {
-      alert('Error creating setup: ' + err.message)
+      setErrorDialog({ open: true, message: err.message })
     }
   }
 
@@ -670,6 +706,15 @@ export const SetupsTab = ({ selectedSetupId, onSelectSetup, setups, loading, cre
           })}
         </div>
       ) : null}
+
+      {/* Error Alert Dialog */}
+      <AlertDialog
+        isOpen={errorDialog.open}
+        onClose={() => setErrorDialog({ open: false, message: '' })}
+        title="Error Creating Setup"
+        message={errorDialog.message}
+        variant="error"
+      />
     </div>
   )
 }

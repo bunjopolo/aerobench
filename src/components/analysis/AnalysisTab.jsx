@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { parseGPX } from '../../lib/gpxParser'
-import { solveCdaCrr, removeOutliers, safeNum } from '../../lib/physics'
+import { solveCdaCrr, safeNum, GRAVITY } from '../../lib/physics'
 import { useAnalyses } from '../../hooks/useAnalyses'
+import { AlertDialog } from '../ui'
 
 // Session storage key for persisting analysis state
 const SESSION_KEY = 'aerobench_analysis_session'
@@ -35,19 +36,17 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
   const [range, setRange] = useState([0, 100])
 
   // Solver
-  const [mode, setMode] = useState('global')
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
-  const [segs, setSegs] = useState([])
-  const [segLen, setSegLen] = useState(180)
   const [maxIterations, setMaxIterations] = useState(500)
-  const [segStats, setSegStats] = useState(null)
-  const [segRange, setSegRange] = useState(null)
   const [saved, setSaved] = useState(false)
 
   // Display options
   const [smoothFilter, setSmoothFilter] = useState(false)
   const [smoothAmount, setSmoothAmount] = useState(3) // 1-10 scale
+
+  // Error dialog state
+  const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
 
   // Variable smoothing function - applies moving average with adjustable window
   const smoothData = (arr, level) => {
@@ -80,8 +79,6 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
           if (session.wDir != null) setWDir(session.wDir)
           if (session.offset != null) setOffset(session.offset)
           if (session.range) setRange(session.range)
-          if (session.mode) setMode(session.mode)
-          if (session.segLen != null) setSegLen(session.segLen)
           if (session.maxIterations != null) setMaxIterations(session.maxIterations)
         }
       }
@@ -105,15 +102,13 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
         wDir,
         offset,
         range,
-        mode,
-        segLen,
         maxIterations
       }
       sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
     } catch (e) {
       console.warn('Failed to save analysis session:', e)
     }
-  }, [data, fileName, startTime, cda, crr, wSpd, wDir, offset, range, mode, segLen, maxIterations, selectedSetup?.id])
+  }, [data, fileName, startTime, cda, crr, wSpd, wDir, offset, range, maxIterations, selectedSetup?.id])
 
   useEffect(() => {
     saveSession()
@@ -139,9 +134,6 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
       const result = parseGPX(ev.target.result)
       setData(result.data)
       setStartTime(result.startTime)
-      setSegs([])
-      setSegStats(null)
-      setSegRange(null)
     }
     r.readAsText(f)
   }
@@ -170,7 +162,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
     } catch (err) {
-      alert('Error saving: ' + err.message)
+      setErrorDialog({ open: true, message: err.message })
     }
   }
 
@@ -182,17 +174,12 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     setWDir(0)
     setOffset(0)
     setRange([0, 100])
-    setMode('global')
-    setSegs([])
-    setSegLen(180)
     setMaxIterations(500)
-    setSegStats(null)
-    setSegRange(null)
     setSmoothFilter(false)
     setSmoothAmount(3)
   }
 
-  // Simulation calculation
+  // Simulation calculation - compute full virtual elevation for display
   const sim = useMemo(() => {
     if (!data) return null
     const { pwr, v, a, ds, ele, b } = data
@@ -203,33 +190,17 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
       return { vEle: [], err: [], sIdx, eIdx, rmse: 0, anomalies: [], emptyRange: true }
     }
 
+    // Compute virtual elevation for FULL dataset (for rangeslider display)
     const vEle = new Array(pwr.length).fill(0)
     const err = new Array(pwr.length).fill(0)
-    vEle[sIdx] = ele[sIdx]
-    let cur = ele[sIdx]
-
-    const segMap = new Array(pwr.length).fill(null)
-    if (mode === 'beta' && segs.length > 0) {
-      segs.forEach(s => {
-        for (let k = s.s; k < s.e; k++) if (k < pwr.length) segMap[k] = { cda: s.cda, crr: s.crr }
-      })
-    }
+    vEle[0] = ele[0]
+    let cur = ele[0]
 
     const iOff = Math.round(offset)
     const wRad = wDir * (Math.PI / 180)
-    let sqSum = 0, cnt = 0
-    const GRAVITY = 9.81
 
-    // Calculate mean elevation for R² calculation
-    let eleSum = 0
-    for (let i = sIdx; i < eIdx; i++) {
-      eleSum += ele[i]
-    }
-    const eleMean = eleSum / (eIdx - sIdx)
-
-    let ssTot = 0 // Total sum of squares
-
-    for (let i = sIdx; i < eIdx; i++) {
+    // Calculate full virtual elevation
+    for (let i = 0; i < pwr.length; i++) {
       const vg = Math.max(0.1, v[i])
       let pi = i - iOff
       if (pi < 0) pi = 0
@@ -239,23 +210,28 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
       const rh = rho * Math.exp(-ele[i] / 9000)
       const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
 
-      let lCda = cda, lCrr = crr
-      if (mode === 'beta' && segMap[i]) {
-        lCda = segMap[i].cda
-        lCrr = segMap[i].crr
-      }
-
-      const fa = 0.5 * rh * lCda * va * va * Math.sign(va)
+      const fa = 0.5 * rh * cda * va * va * Math.sign(va)
       const ft = pw / vg
-      const fr = mass * GRAVITY * lCrr
+      const fr = mass * GRAVITY * crr
       const fac = mass * a[i]
 
-      cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+      if (i > 0) {
+        cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+      }
       vEle[i] = cur
+      err[i] = cur - ele[i]
+    }
 
-      const d = cur - ele[i]
-      err[i] = d
-      sqSum += d * d
+    // Calculate RMSE and R² only within the selected range
+    let sqSum = 0, cnt = 0, ssTot = 0
+    let eleSum = 0
+    for (let i = sIdx; i < eIdx; i++) {
+      eleSum += ele[i]
+    }
+    const eleMean = eleSum / (eIdx - sIdx)
+
+    for (let i = sIdx; i < eIdx; i++) {
+      sqSum += err[i] * err[i]
       ssTot += (ele[i] - eleMean) ** 2
       cnt++
     }
@@ -264,91 +240,16 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
 
     return { vEle, err, sIdx, eIdx, rmse, r2 }
-  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range, segs, mode])
+  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
 
   // Solvers
   const runGlobal = () => {
     if (!data) return
     setBusy(true)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, false, maxIterations)
+      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
       setCda(res.cda)
       setCrr(res.crr)
-      setBusy(false)
-    }, 50)
-  }
-
-  const runSeg = () => {
-    if (!data) return
-    setBusy(true)
-    setTimeout(() => {
-      const s = sim.sIdx, e = sim.eIdx
-      const sz = Math.max(10, Math.floor(segLen)) || 180
-      let rawSegs = []
-      let i
-
-      for (i = s; i < e - sz; i += sz) {
-        const r = solveCdaCrr(data, i, i + sz, cda, crr, mass, eff, rho, offset, wSpd, wDir, true, maxIterations)
-        if (r.cda > 0.1 && r.cda < 0.6 && r.crr > 0.001 && r.crr < 0.015) {
-          rawSegs.push({ s: i, e: i + sz, ...r })
-        }
-      }
-      if (i < e && (e - i) >= 10) {
-        const r = solveCdaCrr(data, i, e, cda, crr, mass, eff, rho, offset, wSpd, wDir, true, maxIterations)
-        if (r.cda > 0.1 && r.cda < 0.6 && r.crr > 0.001 && r.crr < 0.015) {
-          rawSegs.push({ s: i, e: e, ...r })
-        }
-      }
-
-      const minGradeVar = 0.5
-      let filteredSegs = rawSegs.filter(seg => seg.gradeVar >= minGradeVar)
-      const usedMinFilter = filteredSegs.length >= 3
-      if (!usedMinFilter) filteredSegs = rawSegs
-
-      let cleanSegs = removeOutliers(filteredSegs, 'cda')
-      cleanSegs = removeOutliers(cleanSegs, 'crr')
-      if (cleanSegs.length < 3 && filteredSegs.length >= 3) cleanSegs = filteredSegs
-
-      setSegs(cleanSegs)
-      setSegRange([...range])
-
-      if (cleanSegs.length > 0) {
-        const totalQuality = cleanSegs.reduce((a, b) => a + b.quality, 0)
-        const weightedCda = cleanSegs.reduce((a, b) => a + b.cda * b.quality, 0) / totalQuality
-        const weightedCrr = cleanSegs.reduce((a, b) => a + b.crr * b.quality, 0) / totalQuality
-        const simpleCda = cleanSegs.reduce((a, b) => a + b.cda, 0) / cleanSegs.length
-        const simpleCrr = cleanSegs.reduce((a, b) => a + b.crr, 0) / cleanSegs.length
-        const sortedCda = cleanSegs.map(s => s.cda).sort((a, b) => a - b)
-        const sortedCrr = cleanSegs.map(s => s.crr).sort((a, b) => a - b)
-        const medianCda = sortedCda[Math.floor(sortedCda.length / 2)]
-        const medianCrr = sortedCrr[Math.floor(sortedCrr.length / 2)]
-        const stdCda = Math.sqrt(cleanSegs.reduce((a, b) => a + Math.pow(b.cda - simpleCda, 2), 0) / cleanSegs.length)
-        const stdCrr = Math.sqrt(cleanSegs.reduce((a, b) => a + Math.pow(b.crr - simpleCrr, 2), 0) / cleanSegs.length)
-        const n = cleanSegs.length
-        const ciCda = 1.96 * stdCda / Math.sqrt(n)
-        const ciCrr = 1.96 * stdCrr / Math.sqrt(n)
-        const avgQuality = totalQuality / cleanSegs.length
-        const avgRmse = cleanSegs.reduce((a, b) => a + b.rmse, 0) / cleanSegs.length
-
-        setSegStats({
-          n: cleanSegs.length,
-          rejected: rawSegs.length - cleanSegs.length,
-          lowVariance: usedMinFilter ? rawSegs.length - filteredSegs.length : 0,
-          weighted: { cda: weightedCda, crr: weightedCrr },
-          simple: { cda: simpleCda, crr: simpleCrr },
-          median: { cda: medianCda, crr: medianCrr },
-          std: { cda: stdCda, crr: stdCrr },
-          ci: { cda: ciCda, crr: ciCrr },
-          avgQuality,
-          avgRmse
-        })
-
-        setCda(weightedCda)
-        setCrr(weightedCrr)
-      } else {
-        setSegStats(null)
-      }
-
       setBusy(false)
     }, 50)
   }
@@ -373,50 +274,69 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     setFetchingW(false)
   }
 
-  // Chart layout
-  const layout = {
+  // Calculate distance range from percentage range
+  const distanceRange = useMemo(() => {
+    if (!data) return [0, 0]
+    const maxDist = data.dist[data.dist.length - 1]
+    return [
+      (range[0] / 100) * maxDist,
+      (range[1] / 100) * maxDist
+    ]
+  }, [data, range])
+
+  // Handle rangeslider changes
+  const handleRelayout = useCallback((eventData) => {
+    if (!data) return
+    const maxDist = data.dist[data.dist.length - 1]
+
+    if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {
+      const newStart = Math.max(0, eventData['xaxis.range[0]'])
+      const newEnd = Math.min(maxDist, eventData['xaxis.range[1]'])
+      const startPct = Math.round((newStart / maxDist) * 100)
+      const endPct = Math.round((newEnd / maxDist) * 100)
+      if (startPct !== range[0] || endPct !== range[1]) {
+        setRange([Math.max(0, startPct), Math.min(100, endPct)])
+      }
+    }
+    if (eventData['xaxis.range']) {
+      const [newStart, newEnd] = eventData['xaxis.range']
+      const startPct = Math.round((Math.max(0, newStart) / maxDist) * 100)
+      const endPct = Math.round((Math.min(maxDist, newEnd) / maxDist) * 100)
+      if (startPct !== range[0] || endPct !== range[1]) {
+        setRange([Math.max(0, startPct), Math.min(100, endPct)])
+      }
+    }
+  }, [data, range])
+
+  // Chart layout with rangeslider
+  const layout = useMemo(() => ({
     autosize: true,
     paper_bgcolor: '#0f172a',
     plot_bgcolor: '#0f172a',
     font: { color: '#94a3b8' },
-    margin: { t: 40, l: 40, r: 20, b: 40 },
+    margin: { t: 40, l: 50, r: 20, b: 40 },
     grid: { rows: 3, columns: 1, pattern: 'independent' },
     showlegend: true,
     legend: { orientation: 'h', y: 1.1, x: 0 },
-    xaxis: { title: 'Distance (m)', gridcolor: '#1e293b', anchor: 'y3' },
-    yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.65, 1] },
-    yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', domain: [0.35, 0.60] },
-    yaxis3: { title: 'Power (W)', gridcolor: '#1e293b', domain: [0, 0.30] },
+    xaxis: {
+      title: 'Distance (m)',
+      gridcolor: '#1e293b',
+      anchor: 'y3',
+      range: distanceRange,
+      rangeslider: {
+        visible: true,
+        thickness: 0.08,
+        bgcolor: '#1e293b',
+        bordercolor: '#334155',
+        borderwidth: 1
+      }
+    },
+    yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.55, 1] },
+    yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', domain: [0.30, 0.50] },
+    yaxis3: { title: 'Power (W)', gridcolor: '#1e293b', domain: [0.08, 0.26] },
     shapes: [],
     annotations: []
-  }
-
-  // Segment annotations
-  if (mode === 'beta' && segs.length && data && sim && !sim.emptyRange) {
-    const visibleSegs = segs.filter(s => s.e > sim.sIdx && s.s < sim.eIdx)
-    visibleSegs.forEach(s => {
-      const clampedStart = Math.max(s.s, sim.sIdx)
-      const clampedEnd = Math.min(s.e, sim.eIdx)
-      const midIdx = Math.floor((clampedStart + clampedEnd) / 2)
-      const x = (data.dist[clampedStart] + data.dist[clampedEnd]) / 2
-      const y = sim.vEle[midIdx] || data.ele[midIdx]
-
-      if (s.s >= sim.sIdx && s.s < sim.eIdx) {
-        layout.shapes.push({
-          type: 'line', x0: data.dist[s.s], x1: data.dist[s.s], y0: 0, y1: 1, xref: 'x', yref: 'paper',
-          line: { color: 'rgba(255,255,255,0.1)', width: 1, dash: 'dot' }
-        })
-      }
-
-      layout.annotations.push({
-        x, y, xref: 'x', yref: 'y',
-        text: `CdA:${s.cda.toFixed(5)}<br>Crr:${s.crr.toFixed(5)}`,
-        showarrow: true, arrowhead: 0, ay: -30,
-        font: { color: '#4ade80', size: 9 },
-        bgcolor: 'rgba(0,0,0,0.7)', borderpad: 2, bordercolor: '#4ade80', borderwidth: 1, opacity: 0.9
-      })
-    })
-  }
+  }), [distanceRange])
 
   return (
     <div className="flex h-full">
@@ -458,10 +378,6 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
             {/* Solver */}
             <div className="card">
               <h3 className="label-sm mb-3">Solver</h3>
-              <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-3">
-                <button onClick={() => setMode('global')} className={`px-3 py-1 rounded text-xs font-medium flex-1 ${mode === 'global' ? 'bg-slate-600 text-white' : 'text-gray-400'}`}>Global</button>
-                <button onClick={() => setMode('beta')} className={`px-3 py-1 rounded text-xs font-medium flex-1 ${mode === 'beta' ? 'bg-emerald-700 text-white' : 'text-gray-400'}`}>Segmented</button>
-              </div>
 
               <div className="mb-3">
                 <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
@@ -471,64 +387,9 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
                 </div>
               </div>
 
-              {mode === 'global' ? (
-                <button onClick={runGlobal} disabled={busy} className="btn-primary w-full">
-                  {busy ? 'Optimizing...' : 'Auto-Fit'}
-                </button>
-              ) : (
-                <>
-                  <div className="mb-2">
-                    <label className="text-[10px] text-gray-500 mb-1 block">Segment Length</label>
-                    <input type="number" value={segLen} onChange={e => setSegLen(safeNum(e.target.value, segLen))} className="input-dark w-full" />
-                  </div>
-                  <button onClick={runSeg} disabled={busy} className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded font-medium text-xs transition-colors">
-                    {busy ? 'Crunching...' : 'Run Segments'}
-                  </button>
-
-                  {segs.length > 0 && segStats && (
-                    <div className="bg-dark-input p-3 rounded text-[10px] border border-dark-border mt-2 space-y-3">
-                      {segRange && (range[0] !== segRange[0] || range[1] !== segRange[1]) && (
-                        <div className="flex items-center gap-2 p-2 bg-yellow-900/30 border border-yellow-600/50 rounded text-yellow-300">
-                          <span>Range changed - re-run</span>
-                        </div>
-                      )}
-
-                      <div className="flex justify-between items-center pb-2 border-b border-dark-border">
-                        <span className="text-gray-400">Valid Segments</span>
-                        <span className="text-white font-bold">{segStats.n}</span>
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-green-400 font-medium">CdA (Weighted)</span>
-                          <span className="text-green-400 font-mono font-bold">{segStats.weighted.cda.toFixed(5)}</span>
-                        </div>
-                        <div className="flex justify-between text-gray-500">
-                          <span>95% CI</span>
-                          <span className="font-mono">± {segStats.ci.cda.toFixed(5)}</span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-blue-400 font-medium">Crr (Weighted)</span>
-                          <span className="text-blue-400 font-mono font-bold">{segStats.weighted.crr.toFixed(5)}</span>
-                        </div>
-                        <div className="flex justify-between text-gray-500">
-                          <span>95% CI</span>
-                          <span className="font-mono">± {segStats.ci.crr.toFixed(5)}</span>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {segs.length > 0 && (
-                    <button onClick={() => { setSegs([]); setSegStats(null); setSegRange(null) }} className="w-full mt-2 bg-red-900/50 hover:bg-red-900 text-red-200 py-2 rounded text-xs">
-                      Reset
-                    </button>
-                  )}
-                </>
-              )}
+              <button onClick={runGlobal} disabled={busy} className="btn-primary w-full">
+                {busy ? 'Optimizing...' : 'Auto-Fit'}
+              </button>
             </div>
 
             {/* Fitted Values */}
@@ -632,19 +493,19 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
 
       {/* Chart Area */}
       <div className="flex-1 flex flex-col">
-        {/* Crop Controls */}
+        {/* Chart Controls */}
         {data && (
-          <div className="flex items-center gap-6 px-6 py-3 border-b border-dark-border bg-dark-card/50">
-            <span className="text-sm font-bold text-white uppercase tracking-wider">Crop Range</span>
+          <div className="flex items-center gap-6 px-6 py-2 border-b border-dark-border bg-dark-card/50">
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400">Start</span>
-              <input type="range" min="0" max="100" value={range[0]} onChange={e => setRange([Math.min(parseInt(e.target.value), range[1] - 1), range[1]])} className="w-32 accent-brand-primary" />
-              <span className="text-xs font-mono text-brand-accent w-10">{range[0]}%</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-400">End</span>
-              <input type="range" min="0" max="100" value={range[1]} onChange={e => setRange([range[0], Math.max(parseInt(e.target.value), range[0] + 1)])} className="w-32 accent-brand-primary" />
-              <span className="text-xs font-mono text-brand-accent w-10">{range[1]}%</span>
+              <span className="text-xs text-gray-400">Range:</span>
+              <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
+              <button
+                onClick={() => setRange([0, 100])}
+                className="text-[10px] text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                title="Reset to full range"
+              >
+                Reset
+              </button>
             </div>
             <div className="flex items-center gap-3 ml-auto">
               <span className="text-xs text-gray-400">Smooth</span>
@@ -682,27 +543,22 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
             ) : (
               <Plot
                 data={(() => {
-                  const distSlice = data.dist.slice(sim.sIdx, sim.eIdx)
-                  const eleSlice = data.ele.slice(sim.sIdx, sim.eIdx)
-                  const vEleSlice = sim.vEle.slice(sim.sIdx, sim.eIdx)
-                  const errSlice = sim.err.slice(sim.sIdx, sim.eIdx)
-                  const pwrSlice = data.pwr.slice(sim.sIdx, sim.eIdx)
-
-                  // Apply smoothing filter if enabled
-                  const displayEle = smoothFilter ? smoothData(eleSlice, smoothAmount) : eleSlice
-                  const displayVEle = smoothFilter ? smoothData(vEleSlice, smoothAmount) : vEleSlice
+                  // Use full data for rangeslider visibility
+                  const displayEle = smoothFilter ? smoothData(data.ele, smoothAmount) : data.ele
+                  const displayVEle = smoothFilter ? smoothData(sim.vEle, smoothAmount) : sim.vEle
 
                   return [
-                    { x: distSlice, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
-                    { x: distSlice, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
-                    { x: distSlice, y: errSlice, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
-                    { x: distSlice, y: pwrSlice, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }
+                    { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
+                    { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
+                    { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
+                    { x: data.dist, y: data.pwr, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }
                   ]
                 })()}
                 layout={layout}
+                onRelayout={handleRelayout}
                 useResizeHandler={true}
                 style={{ width: '100%', height: '100%' }}
-                config={{ displayModeBar: false, responsive: true }}
+                config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
               />
             )
           ) : (
@@ -713,6 +569,15 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
           )}
         </div>
       </div>
+
+      {/* Error Alert Dialog */}
+      <AlertDialog
+        isOpen={errorDialog.open}
+        onClose={() => setErrorDialog({ open: false, message: '' })}
+        title="Error Saving"
+        message={errorDialog.message}
+        variant="error"
+      />
     </div>
   )
 }
