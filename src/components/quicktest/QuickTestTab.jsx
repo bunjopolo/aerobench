@@ -1,7 +1,6 @@
 import { useState, useMemo, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { useAuth } from '../../hooks/useAuth.jsx'
-import { useAnalytics } from '../../hooks/useAnalytics'
 import { useFeatureFlags } from '../../hooks/useFeatureFlags'
 import { parseGPX } from '../../lib/gpxParser'
 import { solveCdaCrr, solveCdaCrrClimb, solveCdaCrrShenDual, solveCdaCrrSweep, checkSteadyAcceleration, calculateBow, safeNum, GRAVITY } from '../../lib/physics'
@@ -11,7 +10,6 @@ import { SavePresetModal } from '../presets'
 
 export const QuickTestTab = ({ presetsHook }) => {
   const { user } = useAuth()
-  const { trackFeature } = useAnalytics()
   const { isFeatureEnabled, isAdmin } = useFeatureFlags()
 
   // Check which methods are available
@@ -326,7 +324,6 @@ export const QuickTestTab = ({ presetsHook }) => {
     if (!data) return
     setBusy(true)
     setShenResult(null)
-    trackFeature('chung_solver')
     setTimeout(() => {
       const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
       setCda(res.cda)
@@ -340,7 +337,6 @@ export const QuickTestTab = ({ presetsHook }) => {
     if (!data || !data2 || !sim || !sim2) return
     setBusy(true)
     setShenResult(null)
-    trackFeature('shen_solver')
     setTimeout(() => {
       const res = solveCdaCrrShenDual(
         data, sim.sIdx, sim.eIdx,
@@ -362,7 +358,6 @@ export const QuickTestTab = ({ presetsHook }) => {
     if (!data || !data2 || !sim || !sim2) return
     setBusy(true)
     setClimbResult(null)
-    trackFeature('climb_solver')
     setTimeout(() => {
       const res = solveCdaCrrClimb(
         data, sim.sIdx, sim.eIdx,
@@ -385,7 +380,6 @@ export const QuickTestTab = ({ presetsHook }) => {
     setSweepBusy(true)
     setSweepResults(null)
     setSweepProgress(0)
-    trackFeature('sweep_solver', { resolution: sweepResolution })
 
     const res = await solveCdaCrrSweep(
       data, sim.sIdx, sim.eIdx,

@@ -1,7 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { AuthProvider, useAuth } from './hooks/useAuth.jsx'
 import { usePhysicsPresets } from './hooks/usePhysicsPresets'
-import { useAnalytics } from './hooks/useAnalytics'
 import { LoginPage } from './components/auth/LoginPage'
 import { UserMenu } from './components/auth/UserMenu'
 import { EstimatorTab } from './components/estimator/EstimatorTab'
@@ -21,7 +20,6 @@ const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
 const AppContent = () => {
   const { user, isAuthenticated, loading: authLoading } = useAuth()
   const presetsHook = usePhysicsPresets()
-  const { trackPageView } = useAnalytics()
   const [activeTab, setActiveTab] = useState('dashboard')
   const [legalPage, setLegalPage] = useState(null)
   const [showContact, setShowContact] = useState(false)
@@ -29,13 +27,6 @@ const AppContent = () => {
 
   // Check if user is admin
   const isAdmin = user?.email === ADMIN_EMAIL
-
-  // Track page views when tab changes
-  useEffect(() => {
-    if (isAuthenticated && activeTab) {
-      trackPageView(activeTab)
-    }
-  }, [activeTab, isAuthenticated, trackPageView])
 
   const handleStudyClick = (studyId) => {
     setSelectedStudyId(studyId)
