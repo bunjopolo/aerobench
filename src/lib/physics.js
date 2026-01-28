@@ -250,14 +250,14 @@ export const solveCdaCrr = (
   const avgSpeedKph = avgSpeed * 3.6
 
   // Calculate virtual elevation profile for given CdA/Crr
-  // IMPORTANT: Uses same convention as display - starts at ele[0] and computes for FULL dataset
-  // This ensures solver optimizes for what the user sees on screen
+  // ONLY uses data within selected range [si, ei) - treats it as standalone segment
+  // Starts fresh at ele[si] so cropped region is analyzed independently
   const calcVirtualElevation = (tc, tr) => {
-    const vEle = new Array(pwr.length)
-    let cur = ele[0]
-    vEle[0] = cur
+    const vEle = []
+    let cur = ele[si]  // Start at GPS elevation of range start
+    vEle.push(cur)
 
-    for (let i = 1; i < pwr.length; i++) {
+    for (let i = si + 1; i < ei; i++) {
       const vg = Math.max(0.1, v[i])
       let pi = i - io
       if (pi < 0) pi = 0
@@ -266,38 +266,32 @@ export const solveCdaCrr = (
       const localRho = rho * Math.exp(-ele[i] / 9000)
       const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[i]) - (0.5 * localRho * tc * va * va * Math.sign(va))
       cur += (f / (mass * GRAVITY)) * ds[i]
-      vEle[i] = cur
+      vEle.push(cur)
     }
     return vEle
   }
 
-  // Chung method residuals: minimize (virtual_elevation - actual_elevation) within selected range
+  // Chung method residuals: minimize (virtual_elevation - actual_elevation) for selected range
   const chungResidualFn = ([tc, tr]) => {
     const vEle = calcVirtualElevation(tc, tr)
-    // Only return residuals for the selected range [si, ei)
-    const residuals = []
-    for (let i = si; i < ei; i++) {
-      residuals.push(vEle[i] - ele[i])
-    }
-    return residuals
+    // vEle[k] corresponds to ele[si + k]
+    return vEle.map((ve, k) => ve - ele[si + k])
   }
 
   // Shen method residuals: minimize net elevation AND bow
   // This separates CdA and Crr using speed-segregated data
   const shenResidualFn = ([tc, tr]) => {
     const vEle = calcVirtualElevation(tc, tr)
-    // Extract selected range for bow/net calculations
-    const vEleRange = vEle.slice(si, ei)
-    const bow = calculateBow(vEleRange)
-    const netElev = vEleRange[vEleRange.length - 1] - vEleRange[0]
+    const bow = calculateBow(vEle)
+    const netElev = vEle[vEle.length - 1] - vEle[0]
 
     // Primary residuals: netElev and weighted bow
     const residuals = [netElev, bow * 3]
 
     // Add sampled elevation residuals for stability
-    const step = Math.max(1, Math.floor(vEleRange.length / 10))
-    for (let i = 0; i < vEleRange.length; i += step) {
-      residuals.push((vEleRange[i] - ele[si + i]) * 0.5)
+    const step = Math.max(1, Math.floor(vEle.length / 10))
+    for (let k = 0; k < vEle.length; k += step) {
+      residuals.push((vEle[k] - ele[si + k]) * 0.5)
     }
 
     return residuals
@@ -334,16 +328,14 @@ export const solveCdaCrr = (
 
     // Calculate metrics for this result
     const vEle = calcVirtualElevation(result.params[0], result.params[1])
-    // Calculate RMSE within selected range [si, ei)
+    // vEle[k] corresponds to ele[si + k], calculate RMSE
     let sqErr = 0
-    for (let i = si; i < ei; i++) {
-      sqErr += Math.pow(vEle[i] - ele[i], 2)
+    for (let k = 0; k < vEle.length; k++) {
+      sqErr += Math.pow(vEle[k] - ele[si + k], 2)
     }
     const rmse = Math.sqrt(sqErr / n)
-    // Extract range for bow/netElev calculations
-    const vEleRange = vEle.slice(si, ei)
-    const bow = calculateBow(vEleRange)
-    const netElev = vEleRange[vEleRange.length - 1] - vEleRange[0]
+    const bow = calculateBow(vEle)
+    const netElev = vEle[vEle.length - 1] - vEle[0]
     const cost = Math.abs(netElev) + Math.abs(bow) * 3
 
     // Select best based on method
@@ -748,18 +740,19 @@ export const solveCdaCrrShenDual = (
 // ============================================================================
 
 // Compute RMSE for a given CdA/Crr combination (optimized for batch calls)
-// Uses same convention as display: compute vEle from beginning, measure error in selected range
+// ONLY uses data within selected range [si, ei) - treats it as standalone segment
 const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir) => {
   const { pwr, v, a, ds, ele, b } = data
   const io = Math.round(offset)
   const wr = wDir * (Math.PI / 180)
   const n = ei - si
 
-  // Compute virtual elevation from beginning of file (same as display)
-  let cur = ele[0]
+  // Start fresh at GPS elevation of range start
+  let cur = ele[si]
   let sqErr = 0
 
-  for (let i = 1; i < pwr.length; i++) {
+  // First point: vEle = ele[si], error = 0
+  for (let i = si + 1; i < ei; i++) {
     const vg = Math.max(0.1, v[i])
     let pi = i - io
     if (pi < 0) pi = 0
@@ -768,11 +761,7 @@ const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir)
     const localRho = rho * Math.exp(-ele[i] / 9000)
     const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * crr) - (mass * a[i]) - (0.5 * localRho * cda * va * va * Math.sign(va))
     cur += (f / (mass * GRAVITY)) * ds[i]
-
-    // Only accumulate error within selected range
-    if (i >= si && i < ei) {
-      sqErr += Math.pow(cur - ele[i], 2)
-    }
+    sqErr += Math.pow(cur - ele[i], 2)
   }
 
   return Math.sqrt(sqErr / n)

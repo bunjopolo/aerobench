@@ -215,7 +215,9 @@ export const QuickTestTab = ({ presetsHook }) => {
       err[i] = method === 'shen' ? cur : cur - ele[i]
     }
 
-    // Calculate RMSE and R² only within the selected range
+    // Calculate RMSE and R² for the selected range ONLY
+    // Use a fresh virtual elevation starting at ele[sIdx] - treats cropped region as standalone
+    let rangeVEle = ele[sIdx]  // Start fresh at GPS elevation of range start
     let sqSum = 0, cnt = 0, ssTot = 0
     let eleSum = 0
     for (let i = sIdx; i < eIdx; i++) {
@@ -224,7 +226,27 @@ export const QuickTestTab = ({ presetsHook }) => {
     const eleMean = eleSum / (eIdx - sIdx)
 
     for (let i = sIdx; i < eIdx; i++) {
-      const errVal = method === 'shen' ? vEle[i] : err[i]
+      // Compute virtual elevation for this point (fresh start at sIdx)
+      if (i > sIdx) {
+        const vg = Math.max(0.1, v[i])
+        let pi = i - iOff
+        if (pi < 0) pi = 0
+        if (pi >= pwr.length) pi = pwr.length - 1
+
+        const pw = pwr[pi] * eff
+        const rh = rho * Math.exp(-ele[i] / 9000)
+        const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
+
+        const fa = 0.5 * rh * cda * va * va * Math.sign(va)
+        const ft = pw / vg
+        const fr = mass * GRAVITY * crr
+        const fac = mass * a[i]
+
+        rangeVEle += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+      }
+
+      // Error for this point (Shen: deviation from start, others: deviation from GPS)
+      const errVal = method === 'shen' ? (rangeVEle - ele[sIdx]) : (rangeVEle - ele[i])
       sqSum += errVal * errVal
       ssTot += (ele[i] - eleMean) ** 2
       cnt++
@@ -233,7 +255,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     const rmse = cnt > 0 ? Math.sqrt(sqSum / cnt) : 0
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
 
-    // Calculate net elevation for Shen method
+    // Calculate net elevation for Shen method (using range values)
     const netElev = vEle[eIdx - 1] - vEle[sIdx]
 
     return { vEle, err, sIdx, eIdx, rmse, r2, netElev }
