@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Analytics } from '@vercel/analytics/react'
 import { AuthProvider, useAuth } from './hooks/useAuth.jsx'
 import { usePhysicsPresets } from './hooks/usePhysicsPresets'
 import { LoginPage } from './components/auth/LoginPage'
@@ -272,6 +273,7 @@ function App() {
   return (
     <AuthProvider>
       <AppContent />
+      <Analytics />
     </AuthProvider>
   )
 }
