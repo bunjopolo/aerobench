@@ -66,6 +66,9 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [filterVirtual, setFilterVirtual] = useState(false)
   const [filterIntensity, setFilterIntensity] = useState(5)
 
+  // Y-axis autoscale (scale to visible range)
+  const [autoScaleY, setAutoScaleY] = useState(false)
+
   // Shen method state
   const [shenResult, setShenResult] = useState(null)
 
@@ -486,6 +489,60 @@ export const QuickTestTab = ({ presetsHook }) => {
     }
   }, [data, range])
 
+  // Calculate Y-axis range for visible data (when autoScaleY is enabled)
+  const visibleYRange = useMemo(() => {
+    if (!autoScaleY || !data || !sim) return null
+
+    // Find indices within the visible distance range
+    const startDist = distanceRange[0]
+    const endDist = distanceRange[1]
+
+    let minEle = Infinity
+    let maxEle = -Infinity
+    let minErr = Infinity
+    let maxErr = -Infinity
+    let minPwr = Infinity
+    let maxPwr = -Infinity
+
+    const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
+    const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
+
+    for (let i = 0; i < data.dist.length; i++) {
+      if (data.dist[i] >= startDist && data.dist[i] <= endDist) {
+        // Elevation (both GPS and virtual)
+        if (displayEle[i] !== undefined && displayEle[i] !== null) {
+          minEle = Math.min(minEle, displayEle[i])
+          maxEle = Math.max(maxEle, displayEle[i])
+        }
+        if (displayVEle[i] !== undefined && displayVEle[i] !== null) {
+          minEle = Math.min(minEle, displayVEle[i])
+          maxEle = Math.max(maxEle, displayVEle[i])
+        }
+        // Error
+        if (sim.err[i] !== undefined && sim.err[i] !== null) {
+          minErr = Math.min(minErr, sim.err[i])
+          maxErr = Math.max(maxErr, sim.err[i])
+        }
+        // Power
+        if (data.pwr[i] !== undefined && data.pwr[i] !== null) {
+          minPwr = Math.min(minPwr, data.pwr[i])
+          maxPwr = Math.max(maxPwr, data.pwr[i])
+        }
+      }
+    }
+
+    // Add padding (5% of range)
+    const elePadding = (maxEle - minEle) * 0.05 || 1
+    const errPadding = (maxErr - minErr) * 0.05 || 0.5
+    const pwrPadding = (maxPwr - minPwr) * 0.05 || 10
+
+    return {
+      elevation: [minEle - elePadding, maxEle + elePadding],
+      error: [minErr - errPadding, maxErr + errPadding],
+      power: [minPwr - pwrPadding, maxPwr + pwrPadding]
+    }
+  }, [autoScaleY, data, sim, distanceRange, filterGps, filterVirtual, filterIntensity])
+
   // Chart layout with rangeslider
   const layout = useMemo(() => ({
     autosize: true,
@@ -515,12 +572,27 @@ export const QuickTestTab = ({ presetsHook }) => {
         borderwidth: 1
       }
     },
-    yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.55, 1] },
-    yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', domain: [0.30, 0.50] },
-    yaxis3: { title: 'Power (W)', gridcolor: '#1e293b', domain: [0.08, 0.26] },
+    yaxis: {
+      title: 'Elevation (m)',
+      gridcolor: '#1e293b',
+      domain: [0.55, 1],
+      ...(visibleYRange?.elevation && { range: visibleYRange.elevation })
+    },
+    yaxis2: {
+      title: 'Error (m)',
+      gridcolor: '#1e293b',
+      domain: [0.30, 0.50],
+      ...(visibleYRange?.error && { range: visibleYRange.error })
+    },
+    yaxis3: {
+      title: 'Power (W)',
+      gridcolor: '#1e293b',
+      domain: [0.08, 0.26],
+      ...(visibleYRange?.power && { range: visibleYRange.power })
+    },
     shapes: [],
     annotations: []
-  }), [distanceRange])
+  }), [distanceRange, visibleYRange])
 
   if (!user) {
     return (
@@ -1184,6 +1256,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                     title="Reset to full range"
                   >
                     Reset
+                  </button>
+                  <button
+                    onClick={() => setAutoScaleY(!autoScaleY)}
+                    className={`text-xxs px-1.5 py-0.5 rounded border ${autoScaleY ? 'bg-indigo-900/50 border-indigo-500/50 text-indigo-400' : 'border-dark-border text-gray-500 hover:text-white hover:bg-dark-input'}`}
+                    title="Auto-scale Y axis to visible data"
+                  >
+                    Autoscale Y
                   </button>
                 </div>
                 {method === 'sweep' && sweepResults && (
