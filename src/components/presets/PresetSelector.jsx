@@ -60,7 +60,7 @@ export const PresetSelector = ({ presets, loading, onLoad, onDelete }) => {
               >
                 <div className="flex-1 min-w-0">
                   <div className="font-medium text-white text-sm truncate">{preset.name}</div>
-                  <div className="flex items-center gap-3 text-[10px] text-gray-500 mt-0.5">
+                  <div className="flex items-center gap-3 text-xxs text-gray-500 mt-0.5">
                     <span>CdA: <span className="text-green-400 font-mono">{preset.cda?.toFixed(4)}</span></span>
                     <span>Crr: <span className="text-blue-400 font-mono">{preset.crr?.toFixed(5)}</span></span>
                     <span>Mass: <span className="text-white font-mono">{preset.mass?.toFixed(0)}kg</span></span>

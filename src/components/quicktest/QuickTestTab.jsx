@@ -1,14 +1,24 @@
 import { useState, useMemo, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { useAuth } from '../../hooks/useAuth.jsx'
+import { useAnalytics } from '../../hooks/useAnalytics'
+import { useFeatureFlags } from '../../hooks/useFeatureFlags'
 import { parseGPX } from '../../lib/gpxParser'
-import { solveCdaCrr, solveCdaCrrClimb, solveCdaCrrShenDual, checkSteadyAcceleration, calculateBow, safeNum, GRAVITY } from '../../lib/physics'
+import { solveCdaCrr, solveCdaCrrClimb, solveCdaCrrShenDual, solveCdaCrrSweep, checkSteadyAcceleration, calculateBow, safeNum, GRAVITY } from '../../lib/physics'
 import { lowPassFilter } from '../../lib/preprocessing'
 import { calculateAirDensity } from '../../lib/airDensity'
 import { SavePresetModal } from '../presets'
 
 export const QuickTestTab = ({ presetsHook }) => {
   const { user } = useAuth()
+  const { trackFeature } = useAnalytics()
+  const { isFeatureEnabled, isAdmin } = useFeatureFlags()
+
+  // Check which methods are available
+  const hasShenMethod = isFeatureEnabled('method_shen')
+  const hasClimbMethod = isFeatureEnabled('method_climb')
+  const hasSweepMethod = isFeatureEnabled('method_sweep')
+  const hasAnyExtraMethod = hasShenMethod || hasClimbMethod || hasSweepMethod
   const [showSavePreset, setShowSavePreset] = useState(false)
 
   // Physics inputs
@@ -50,6 +60,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [method, setMethod] = useState('chung') // 'chung' or 'shen'
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
+  const [weatherError, setWeatherError] = useState(null)
   const [maxIterations, setMaxIterations] = useState(500)
 
   // Low-pass filter (for display only)
@@ -59,6 +70,16 @@ export const QuickTestTab = ({ presetsHook }) => {
 
   // Shen method state
   const [shenResult, setShenResult] = useState(null)
+
+  // Sweep method state
+  const [sweepResults, setSweepResults] = useState(null)
+  const [sweepBusy, setSweepBusy] = useState(false)
+  const [sweepProgress, setSweepProgress] = useState(0)
+  const [sweepCdaMin, setSweepCdaMin] = useState(0.10)
+  const [sweepCdaMax, setSweepCdaMax] = useState(0.60)
+  const [sweepCrrMin, setSweepCrrMin] = useState(0.001)
+  const [sweepCrrMax, setSweepCrrMax] = useState(0.020)
+  const [sweepResolution, setSweepResolution] = useState(70)
 
   // Air density calculator state
   const [showRhoCalc, setShowRhoCalc] = useState(false)
@@ -137,6 +158,12 @@ export const QuickTestTab = ({ presetsHook }) => {
     setFilterIntensity(5)
     setShenResult(null)
     setClimbResult(null)
+    setSweepResults(null)
+    setSweepCdaMin(0.10)
+    setSweepCdaMax(0.60)
+    setSweepCrrMin(0.001)
+    setSweepCrrMax(0.020)
+    setSweepResolution(70)
   }
 
   // Simulation calculation - compute full virtual elevation for display
@@ -299,6 +326,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     if (!data) return
     setBusy(true)
     setShenResult(null)
+    trackFeature('chung_solver')
     setTimeout(() => {
       const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
       setCda(res.cda)
@@ -312,6 +340,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     if (!data || !data2 || !sim || !sim2) return
     setBusy(true)
     setShenResult(null)
+    trackFeature('shen_solver')
     setTimeout(() => {
       const res = solveCdaCrrShenDual(
         data, sim.sIdx, sim.eIdx,
@@ -333,6 +362,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     if (!data || !data2 || !sim || !sim2) return
     setBusy(true)
     setClimbResult(null)
+    trackFeature('climb_solver')
     setTimeout(() => {
       const res = solveCdaCrrClimb(
         data, sim.sIdx, sim.eIdx,
@@ -350,23 +380,72 @@ export const QuickTestTab = ({ presetsHook }) => {
     }, 50)
   }
 
+  const runSweep = async () => {
+    if (!data || !sim) return
+    setSweepBusy(true)
+    setSweepResults(null)
+    setSweepProgress(0)
+    trackFeature('sweep_solver', { resolution: sweepResolution })
+
+    const res = await solveCdaCrrSweep(
+      data, sim.sIdx, sim.eIdx,
+      mass, eff, rho, offset, wSpd, wDir,
+      {
+        cdaMin: sweepCdaMin,
+        cdaMax: sweepCdaMax,
+        cdaSteps: sweepResolution,
+        crrMin: sweepCrrMin,
+        crrMax: sweepCrrMax,
+        crrSteps: sweepResolution,
+        onProgress: (percent) => setSweepProgress(percent)
+      }
+    )
+
+    setSweepResults(res)
+    // Set CdA/Crr to the best solution
+    if (res.best) {
+      setCda(res.best.cda)
+      setCrr(res.best.crr)
+    }
+    setSweepBusy(false)
+    setSweepProgress(100)
+  }
+
+  // Handle clicking on the heatmap to select a CdA/Crr point
+  const handleSweepClick = (event) => {
+    if (!sweepResults || !event.points || !event.points[0]) return
+    const point = event.points[0]
+    // x = CdA, y = Crr
+    setCda(point.x)
+    setCrr(point.y)
+  }
+
   const getWeather = async () => {
     if (!data || !startTime) return
     setFetchingW(true)
+    setWeatherError(null)
     try {
       const mid = Math.floor(data.lat.length / 2)
       const ds = startTime.toISOString().split('T')[0]
       const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m`
       const r = await fetch(u)
+      if (!r.ok) throw new Error('Weather service unavailable')
       const j = await r.json()
       if (j.hourly) {
         const h = startTime.getUTCHours()
         if (j.hourly.wind_speed_10m[h] !== undefined) {
           setWSpd(parseFloat((j.hourly.wind_speed_10m[h] / 3.6 * 0.6).toFixed(2)))
           setWDir(j.hourly.wind_direction_10m[h])
+        } else {
+          setWeatherError('No data for this time')
         }
+      } else {
+        setWeatherError('No weather data available')
       }
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error(e)
+      setWeatherError('Failed to fetch weather')
+    }
     setFetchingW(false)
   }
 
@@ -423,11 +502,17 @@ export const QuickTestTab = ({ presetsHook }) => {
     grid: { rows: 3, columns: 1, pattern: 'independent' },
     showlegend: true,
     legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
+    hovermode: 'x',
     xaxis: {
       title: 'Distance (m)',
       gridcolor: '#1e293b',
       anchor: 'y3',
       range: distanceRange,
+      showspikes: true,
+      spikemode: 'across',
+      spikethickness: 1,
+      spikecolor: '#6366f1',
+      spikedash: 'solid',
       rangeslider: {
         visible: true,
         thickness: 0.08,
@@ -445,8 +530,21 @@ export const QuickTestTab = ({ presetsHook }) => {
 
   if (!user) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-gray-500">Please sign in to use Quick Test</p>
+      <div className="flex items-center justify-center h-full p-6">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-brand-primary/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">Quick Test</h2>
+          <p className="text-gray-400 mb-6">
+            Analyze a single GPX file to calculate your CdA and Crr values. Create an account to get started.
+          </p>
+          <p className="text-sm text-gray-500">
+            Sign in from the Dashboard to use this feature.
+          </p>
+        </div>
       </div>
     )
   }
@@ -463,15 +561,19 @@ export const QuickTestTab = ({ presetsHook }) => {
 
         {/* File Upload */}
         <div className="card">
-          {method === 'chung' ? (
+          {method === 'chung' || method === 'sweep' ? (
             <>
-              <label className="block w-full cursor-pointer bg-brand-primary hover:bg-indigo-600 text-white text-center py-2.5 rounded font-medium transition-colors">
+              <label className={`block w-full cursor-pointer ${method === 'sweep' ? 'bg-violet-600 hover:bg-violet-500' : 'bg-brand-primary hover:bg-indigo-600'} text-white text-center py-2.5 rounded font-medium transition-colors`}>
                 Upload GPX File
                 <input type="file" accept=".gpx" onChange={onFile} className="hidden" />
               </label>
               {!data && (
                 <p className="text-center text-xs text-gray-500 mt-2">
-                  Upload a GPX for <span className="text-indigo-400">Chung</span> analysis
+                  {method === 'sweep' ? (
+                    <>Upload a GPX to visualize <span className="text-violet-400">all possible solutions</span></>
+                  ) : (
+                    <>Upload a GPX for <span className="text-indigo-400">Chung</span> analysis</>
+                  )}
                 </p>
               )}
               {data && fileName && (
@@ -499,10 +601,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                     <input type="file" accept=".gpx" onChange={onFile} className="hidden" />
                   </label>
                   {fileName && (
-                    <p className="text-center text-[10px] text-amber-400 mt-1 truncate">{fileName}</p>
+                    <p className="text-center text-xxs text-amber-400 mt-1 truncate">{fileName}</p>
                   )}
                   {fileName && !hasPowerData && (
-                    <p className="text-center text-[10px] text-yellow-500 mt-1">No power data</p>
+                    <p className="text-center text-xxs text-yellow-500 mt-1">No power data</p>
                   )}
                 </div>
 
@@ -513,10 +615,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                     <input type="file" accept=".gpx" onChange={onFile2} className="hidden" />
                   </label>
                   {fileName2 && (
-                    <p className="text-center text-[10px] text-orange-400 mt-1 truncate">{fileName2}</p>
+                    <p className="text-center text-xxs text-orange-400 mt-1 truncate">{fileName2}</p>
                   )}
                   {fileName2 && !hasPowerData2 && (
-                    <p className="text-center text-[10px] text-yellow-500 mt-1">No power data</p>
+                    <p className="text-center text-xxs text-yellow-500 mt-1">No power data</p>
                   )}
                 </div>
               </div>
@@ -544,10 +646,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                     <input type="file" accept=".gpx" onChange={onFile} className="hidden" />
                   </label>
                   {fileName && (
-                    <p className="text-center text-[10px] text-cyan-400 mt-1 truncate">{fileName}</p>
+                    <p className="text-center text-xxs text-cyan-400 mt-1 truncate">{fileName}</p>
                   )}
                   {fileName && !hasPowerData && (
-                    <p className="text-center text-[10px] text-yellow-500 mt-1">No power data</p>
+                    <p className="text-center text-xxs text-yellow-500 mt-1">No power data</p>
                   )}
                 </div>
 
@@ -558,10 +660,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                     <input type="file" accept=".gpx" onChange={onFile2} className="hidden" />
                   </label>
                   {fileName2 && (
-                    <p className="text-center text-[10px] text-yellow-400 mt-1 truncate">{fileName2}</p>
+                    <p className="text-center text-xxs text-yellow-400 mt-1 truncate">{fileName2}</p>
                   )}
                   {fileName2 && !hasPowerData2 && (
-                    <p className="text-center text-[10px] text-yellow-500 mt-1">No power data</p>
+                    <p className="text-center text-xxs text-yellow-500 mt-1">No power data</p>
                   )}
                 </div>
               </div>
@@ -581,606 +683,493 @@ export const QuickTestTab = ({ presetsHook }) => {
           )}
         </div>
 
-        {/* Method Selection - MUST be chosen before uploading file */}
+        {/* Combined: Analysis Method + System Parameters + Solver */}
         <div className="card">
-          <h3 className="label-sm mb-2">Analysis Method</h3>
-          <div className={`flex bg-dark-input p-0.5 rounded border border-dark-border ${(data || data2) ? 'opacity-50' : ''}`}>
-            <button
-              onClick={() => { if (!data && !data2) setMethod('chung') }}
-              disabled={!!(data || data2)}
-              className={`px-2 py-1.5 rounded text-[10px] font-medium flex-1 transition-colors ${method === 'chung' ? 'bg-indigo-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
-            >
-              Chung
-            </button>
-            <button
-              onClick={() => { if (!data && !data2) setMethod('shen') }}
-              disabled={!!(data || data2)}
-              className={`px-2 py-1.5 rounded text-[10px] font-medium flex-1 transition-colors ${method === 'shen' ? 'bg-amber-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
-            >
-              Shen
-            </button>
-            <button
-              onClick={() => { if (!data && !data2) setMethod('climb') }}
-              disabled={!!(data || data2)}
-              className={`px-2 py-1.5 rounded text-[10px] font-medium flex-1 transition-colors ${method === 'climb' ? 'bg-emerald-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
-            >
-              Climb
-            </button>
-          </div>
-          <p className="text-[10px] text-gray-500 mt-2">
-            {method === 'chung'
-              ? 'Standard method for typical rides with varying speeds.'
-              : method === 'shen'
-              ? 'Two acceleration runs on FLAT ground. Goal: virtual elevation is both STRAIGHT (no bow) and LEVEL (net ≈ 0).'
-              : 'Two files from same climb at different speeds for better CdA/Crr separation.'}
-          </p>
-          {(data || data2) && (
-            <p className="text-[10px] text-yellow-500 mt-1">Clear file(s) to change method</p>
-          )}
-        </div>
+          <h3 className="label-sm mb-2">Analysis</h3>
 
-        {/* Physics Inputs */}
-        <div className="card">
-          <h3 className="label-sm mb-3">System Parameters</h3>
-          <div className="space-y-3">
+          {/* Method Selector - Shows methods based on feature flags */}
+          {hasAnyExtraMethod ? (
+            <div className={`flex bg-dark-input p-0.5 rounded border border-dark-border mb-3 ${(data || data2) ? 'opacity-50' : ''}`}>
+              <button
+                onClick={() => { if (!data && !data2) setMethod('chung') }}
+                disabled={!!(data || data2)}
+                className={`px-2 py-1.5 rounded text-xxs font-medium flex-1 transition-colors ${method === 'chung' ? 'bg-indigo-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
+              >
+                Chung
+              </button>
+              {hasShenMethod && (
+                <button
+                  onClick={() => { if (!data && !data2) setMethod('shen') }}
+                  disabled={!!(data || data2)}
+                  className={`px-2 py-1.5 rounded text-xxs font-medium flex-1 transition-colors ${method === 'shen' ? 'bg-amber-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
+                >
+                  Shen
+                </button>
+              )}
+              {hasClimbMethod && (
+                <button
+                  onClick={() => { if (!data && !data2) setMethod('climb') }}
+                  disabled={!!(data || data2)}
+                  className={`px-2 py-1.5 rounded text-xxs font-medium flex-1 transition-colors ${method === 'climb' ? 'bg-emerald-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
+                >
+                  Climb
+                </button>
+              )}
+              {hasSweepMethod && (
+                <button
+                  onClick={() => { if (!data && !data2) setMethod('sweep') }}
+                  disabled={!!(data || data2)}
+                  className={`px-2 py-1.5 rounded text-xxs font-medium flex-1 transition-colors ${method === 'sweep' ? 'bg-violet-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
+                >
+                  Sweep
+                </button>
+              )}
+            </div>
+          ) : (
+            /* Only Chung method available */
+            <div className="bg-dark-input p-2 rounded border border-dark-border mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xxs px-2 py-1 rounded bg-indigo-600 text-white font-medium">Chung Method</span>
+                <span className="text-xxs text-gray-500">Virtual Elevation Analysis</span>
+              </div>
+            </div>
+          )}
+
+          {/* System Parameters */}
+          <div className="grid grid-cols-2 gap-2 mb-2">
             <div>
-              <label className="text-[10px] text-gray-500 mb-1 block">Total Mass (kg)</label>
+              <label className="text-xxs text-gray-500 mb-1 block">Mass (kg)</label>
               <input
                 type="number"
                 step="0.1"
+                min="30"
+                max="200"
                 value={mass}
-                onChange={e => setMass(safeNum(e.target.value, mass))}
+                onChange={e => {
+                  const val = safeNum(e.target.value, mass)
+                  setMass(Math.max(30, Math.min(200, val)))
+                }}
                 className="input-dark w-full"
               />
-              <p className="text-[10px] text-gray-600 mt-0.5">Rider + bike + gear</p>
             </div>
             <div>
-              <label className="text-[10px] text-gray-500 mb-1 block">Drivetrain Efficiency</label>
+              <label className="text-xxs text-gray-500 mb-1 block">Efficiency</label>
               <input
                 type="number"
                 step="0.01"
                 min="0.9"
                 max="1"
                 value={eff}
-                onChange={e => setEff(safeNum(e.target.value, eff))}
+                onChange={e => {
+                  const val = safeNum(e.target.value, eff)
+                  setEff(Math.max(0.9, Math.min(1, val)))
+                }}
                 className="input-dark w-full"
               />
             </div>
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[10px] text-gray-500">Air Density (kg/m³)</label>
-                <button
-                  onClick={() => setShowRhoCalc(!showRhoCalc)}
-                  className="text-[10px] text-indigo-400 hover:text-indigo-300"
-                >
-                  {showRhoCalc ? 'Hide Calculator' : 'Calculator'}
-                </button>
+          </div>
+
+          {/* Air Density */}
+          <div className="mb-3">
+            <div className="flex items-center gap-2 mb-1">
+              <label className="text-xxs text-gray-500">Air Density (kg/m³)</label>
+              <button
+                onClick={() => setShowRhoCalc(!showRhoCalc)}
+                className="text-xxs text-indigo-400 hover:text-indigo-300"
+              >
+                {showRhoCalc ? 'Hide Calculator' : 'Calculator'}
+              </button>
+            </div>
+            <input
+              type="number"
+              step="0.001"
+              value={rho}
+              onChange={e => setRho(safeNum(e.target.value, rho))}
+              className="input-dark w-full"
+            />
+          </div>
+
+          {/* Air Density Calculator (collapsible) */}
+          {showRhoCalc && (
+            <div className="mb-3 p-3 bg-dark-bg rounded border border-dark-border space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xxs text-gray-500 mb-1 block">Temperature (°C)</label>
+                  <input type="number" step="0.1" value={rhoTemp} onChange={e => setRhoTemp(safeNum(e.target.value, rhoTemp))} className="input-dark w-full" />
+                </div>
+                <div>
+                  <label className="text-xxs text-gray-500 mb-1 block">Humidity (%)</label>
+                  <input type="number" step="1" min="0" max="100" value={rhoHumidity} onChange={e => setRhoHumidity(safeNum(e.target.value, rhoHumidity))} className="input-dark w-full" />
+                </div>
               </div>
-              <input
-                type="number"
-                step="0.001"
-                value={rho}
-                onChange={e => setRho(safeNum(e.target.value, rho))}
-                className="input-dark w-full"
-              />
-              <p className="text-[10px] text-gray-600 mt-0.5">Sea level @ 15°C: 1.225</p>
+              <div className="flex bg-dark-input p-0.5 rounded border border-dark-border">
+                <button onClick={() => setRhoUseElevation(true)} className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}>Elevation</button>
+                <button onClick={() => setRhoUseElevation(false)} className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}>Pressure</button>
+              </div>
+              {rhoUseElevation ? (
+                <div>
+                  <label className="text-xxs text-gray-500 mb-1 block">Elevation (m)</label>
+                  <input type="number" step="1" value={rhoElevation} onChange={e => setRhoElevation(safeNum(e.target.value, rhoElevation))} className="input-dark w-full" />
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xxs text-gray-500 mb-1 block">Pressure (hPa)</label>
+                  <input type="number" step="0.1" value={rhoPressure} onChange={e => setRhoPressure(safeNum(e.target.value, rhoPressure))} className="input-dark w-full" />
+                </div>
+              )}
+              <div className="flex items-center justify-between pt-2 border-t border-dark-border">
+                <span className="text-sm text-cyan-400 font-mono font-bold">{getCalculatedRho()} kg/m³</span>
+                <button onClick={applyCalculatedRho} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded text-xs font-medium">Apply</button>
+              </div>
+            </div>
+          )}
 
-              {/* Air Density Calculator */}
-              {showRhoCalc && (
-                <div className="mt-3 p-3 bg-dark-bg rounded border border-dark-border space-y-3">
-                  <p className="text-[10px] text-gray-400 font-medium">Calculate from conditions:</p>
-
-                  {/* Temperature */}
-                  <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block">Temperature (°C)</label>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={rhoTemp}
-                      onChange={e => setRhoTemp(safeNum(e.target.value, rhoTemp))}
-                      className="input-dark w-full"
-                    />
+          {/* Solver Controls */}
+          {(data || (method !== 'chung' && (data || data2))) && (
+            <div className="pt-3 border-t border-dark-border">
+              {method === 'chung' && (
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="flex-1">
+                    <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
+                    <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
                   </div>
+                  <button onClick={runGlobal} disabled={busy} className="btn-primary mt-4 px-6">
+                    {busy ? '...' : 'Auto-Fit'}
+                  </button>
+                </div>
+              )}
+              {method !== 'chung' && (
+                <div className="mb-2">
+                  <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
+                  <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
+                </div>
+              )}
 
-                  {/* Pressure Mode Toggle */}
-                  <div>
-                    <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-2">
-                      <button
-                        onClick={() => setRhoUseElevation(true)}
-                        className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
-                      >
-                        Elevation
-                      </button>
-                      <button
-                        onClick={() => setRhoUseElevation(false)}
-                        className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
-                      >
-                        Pressure
-                      </button>
+              {/* Shen/Climb file status and run button */}
+              {method === 'shen' && (
+                <>
+                  <div className={`p-2 rounded text-xxs border mb-2 ${data && data2 ? 'bg-green-900/20 border-green-500/30 text-green-400' : 'bg-yellow-900/20 border-yellow-500/30 text-yellow-400'}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={data ? 'text-amber-400' : 'text-gray-500'}>{data ? '✓' : '○'}</span>
+                      <span className={data2 ? 'text-orange-400' : 'text-gray-500'}>{data2 ? '✓' : '○'}</span>
+                      <span>{data && data2 ? 'Both loaded' : 'Load both files'}</span>
                     </div>
+                  </div>
+                  <button onClick={runShen} disabled={busy || !data || !data2} className={`w-full py-2 rounded font-medium text-xs ${data && data2 ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-gray-700 text-gray-500 cursor-not-allowed'}`}>
+                    {busy ? 'Analyzing...' : 'Run Shen Method'}
+                  </button>
+                </>
+              )}
 
-                    {rhoUseElevation ? (
+              {method === 'climb' && (
+                <>
+                  <div className={`p-2 rounded text-xxs border mb-2 ${data && data2 ? 'bg-green-900/20 border-green-500/30 text-green-400' : 'bg-yellow-900/20 border-yellow-500/30 text-yellow-400'}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={data ? 'text-cyan-400' : 'text-gray-500'}>{data ? '✓' : '○'}</span>
+                      <span className={data2 ? 'text-yellow-400' : 'text-gray-500'}>{data2 ? '✓' : '○'}</span>
+                      <span>{data && data2 ? 'Both loaded' : 'Load both files'}</span>
+                    </div>
+                  </div>
+                  <button onClick={runClimb} disabled={busy || !data || !data2} className={`w-full py-2 rounded font-medium text-xs ${data && data2 ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-gray-700 text-gray-400 cursor-not-allowed'}`}>
+                    {busy ? 'Analyzing...' : 'Run Climb Analysis'}
+                  </button>
+                </>
+              )}
+
+              {method === 'sweep' && (
+                <>
+                  <div className="space-y-2 mb-3">
+                    {/* CdA Range */}
+                    <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <label className="text-[10px] text-gray-500 mb-1 block">Elevation (m)</label>
-                        <input
-                          type="number"
-                          step="1"
-                          value={rhoElevation}
-                          onChange={e => setRhoElevation(safeNum(e.target.value, rhoElevation))}
-                          className="input-dark w-full"
-                        />
+                        <label className="text-xxs text-gray-500 mb-1 block">CdA Min</label>
+                        <input type="number" step="0.01" min="0.05" max="0.50" value={sweepCdaMin} onChange={e => setSweepCdaMin(safeNum(e.target.value, sweepCdaMin))} className="input-dark w-full" />
                       </div>
-                    ) : (
                       <div>
-                        <label className="text-[10px] text-gray-500 mb-1 block">Pressure (hPa)</label>
-                        <input
-                          type="number"
-                          step="0.1"
-                          value={rhoPressure}
-                          onChange={e => setRhoPressure(safeNum(e.target.value, rhoPressure))}
-                          className="input-dark w-full"
-                        />
+                        <label className="text-xxs text-gray-500 mb-1 block">CdA Max</label>
+                        <input type="number" step="0.01" min="0.15" max="0.80" value={sweepCdaMax} onChange={e => setSweepCdaMax(safeNum(e.target.value, sweepCdaMax))} className="input-dark w-full" />
                       </div>
+                    </div>
+                    {/* Crr Range */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xxs text-gray-500 mb-1 block">Crr Min</label>
+                        <input type="number" step="0.001" min="0.001" max="0.010" value={sweepCrrMin} onChange={e => setSweepCrrMin(safeNum(e.target.value, sweepCrrMin))} className="input-dark w-full" />
+                      </div>
+                      <div>
+                        <label className="text-xxs text-gray-500 mb-1 block">Crr Max</label>
+                        <input type="number" step="0.001" min="0.005" max="0.030" value={sweepCrrMax} onChange={e => setSweepCrrMax(safeNum(e.target.value, sweepCrrMax))} className="input-dark w-full" />
+                      </div>
+                    </div>
+                    {/* Resolution */}
+                    <div>
+                      <div className="flex justify-between text-xxs mb-1">
+                        <span className="text-gray-500">Resolution</span>
+                        <span className="text-violet-400">{sweepResolution}x{sweepResolution} = {(sweepResolution+1)*(sweepResolution+1).toLocaleString()} pts</span>
+                      </div>
+                      <input type="range" min="30" max="150" value={sweepResolution} onChange={e => setSweepResolution(parseInt(e.target.value))} className="w-full accent-violet-500" />
+                    </div>
+                    {/* Range validation warning */}
+                    {(sweepCdaMin >= sweepCdaMax || sweepCrrMin >= sweepCrrMax) && (
+                      <p className="text-xxs text-red-400 mt-1">
+                        {sweepCdaMin >= sweepCdaMax && 'CdA min must be less than max. '}
+                        {sweepCrrMin >= sweepCrrMax && 'Crr min must be less than max.'}
+                      </p>
                     )}
                   </div>
-
-                  {/* Humidity */}
-                  <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block">Relative Humidity (%)</label>
-                    <input
-                      type="number"
-                      step="1"
-                      min="0"
-                      max="100"
-                      value={rhoHumidity}
-                      onChange={e => setRhoHumidity(safeNum(e.target.value, rhoHumidity))}
-                      className="input-dark w-full"
-                    />
-                  </div>
-
-                  {/* Preview and Apply */}
-                  <div className="pt-2 border-t border-dark-border">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] text-gray-400">Calculated:</span>
-                      <span className="text-sm font-mono font-bold text-cyan-400">{getCalculatedRho()} kg/m³</span>
+                  {sweepBusy ? (
+                    <div className="space-y-2">
+                      {/* Progress bar container */}
+                      <div className="relative h-8 bg-dark-bg rounded-lg overflow-hidden border border-violet-500/30">
+                        {/* Animated gradient background */}
+                        <div
+                          className="absolute inset-y-0 left-0 bg-gradient-to-r from-violet-600 via-purple-500 to-violet-600 transition-all duration-150 ease-out"
+                          style={{ width: `${sweepProgress}%` }}
+                        />
+                        {/* Shimmer effect */}
+                        <div
+                          className="absolute inset-y-0 left-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-pulse"
+                          style={{ width: `${sweepProgress}%` }}
+                        />
+                        {/* Progress text */}
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <span className="text-xs font-bold text-white drop-shadow-lg">
+                            {sweepProgress}% - Computing {((sweepResolution + 1) * (sweepResolution + 1)).toLocaleString()} solutions
+                          </span>
+                        </div>
+                      </div>
+                      {/* Cancel hint */}
+                      <p className="text-xxs text-gray-500 text-center">Analyzing solution space...</p>
                     </div>
+                  ) : (
                     <button
-                      onClick={applyCalculatedRho}
-                      className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 rounded text-xs font-medium transition-colors"
+                      onClick={runSweep}
+                      disabled={!data || sweepCdaMin >= sweepCdaMax || sweepCrrMin >= sweepCrrMax}
+                      className={`w-full py-2 rounded font-medium text-xs ${
+                        data && sweepCdaMin < sweepCdaMax && sweepCrrMin < sweepCrrMax
+                          ? 'bg-violet-600 hover:bg-violet-500 text-white'
+                          : 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                      }`}
                     >
-                      Apply
+                      Run Sweep
                     </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Combined: Fitted Values + Results */}
+        {(data || (method !== 'chung' && (data || data2))) && (
+          <div className="card">
+            <h3 className="label-sm mb-3">Results</h3>
+
+            {/* CdA/Crr Sliders */}
+            <div className="space-y-3 mb-3">
+              <div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-green-400 font-medium">CdA</span>
+                  <span className="font-mono font-bold">{cda.toFixed(4)}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setCda(Math.max(0.15, cda - 0.001))}
+                    className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
+                  >−</button>
+                  <input type="range" min="0.15" max="0.5" step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
+                  <button
+                    onClick={() => setCda(Math.min(0.5, cda + 0.001))}
+                    className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
+                  >+</button>
+                </div>
+              </div>
+              <div>
+                <div className="flex justify-between text-xs mb-1">
+                  <span className="text-blue-400 font-medium">Crr</span>
+                  <span className="font-mono font-bold">{crr.toFixed(5)}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => setCrr(Math.max(0.002, crr - 0.0001))}
+                    className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
+                  >−</button>
+                  <input type="range" min="0.002" max="0.02" step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
+                  <button
+                    onClick={() => setCrr(Math.min(0.02, crr + 0.0001))}
+                    className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
+                  >+</button>
+                </div>
+              </div>
+            </div>
+
+            {/* Fit Quality Metrics */}
+            {method === 'chung' && sim && sim.r2 > 0 && (
+              <div className="grid grid-cols-2 gap-2 text-xs mb-3 p-2 bg-dark-bg rounded border border-dark-border">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">RMSE</span>
+                  <span className={`font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>{sim.rmse.toFixed(2)}m</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">R²</span>
+                  <span className={`font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>{sim.r2.toFixed(4)}</span>
+                </div>
+              </div>
+            )}
+
+            {method === 'climb' && climbResult && (
+              <div className="text-xs mb-3 p-2 bg-dark-bg rounded border border-dark-border space-y-1">
+                <div className="flex justify-between"><span className="text-gray-500">RMSE</span><span className={`font-mono ${climbResult.rmse < 1 ? 'text-emerald-400' : 'text-yellow-400'}`}>{climbResult.rmse.toFixed(3)}m</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">R²</span><span className={`font-mono ${climbResult.r2 > 0.95 ? 'text-emerald-400' : 'text-yellow-400'}`}>{climbResult.r2.toFixed(4)}</span></div>
+                <div className="text-xxs text-gray-500 pt-1 border-t border-dark-border">Low: {climbResult.avgSpeed1.toFixed(1)} km/h | High: {climbResult.avgSpeed2.toFixed(1)} km/h</div>
+              </div>
+            )}
+
+            {method === 'shen' && shenResult && (
+              <div className="text-xs mb-3 p-2 bg-dark-bg rounded border border-dark-border space-y-1">
+                <div className="flex justify-between"><span className="text-gray-500">Bow</span><span className="font-mono text-amber-400">{shenResult.bow1.toFixed(2)}m / {shenResult.bow2.toFixed(2)}m</span></div>
+                <div className="flex justify-between"><span className="text-gray-500">Net</span><span className="font-mono text-amber-400">{shenResult.netElev1.toFixed(2)}m / {shenResult.netElev2.toFixed(2)}m</span></div>
+                <div className="text-xxs text-gray-500 pt-1 border-t border-dark-border">Slow: {shenResult.avgSpeed1.toFixed(1)} km/h | Fast: {shenResult.avgSpeed2.toFixed(1)} km/h</div>
+              </div>
+            )}
+
+            {method === 'sweep' && sweepResults && (
+              <div className="text-xs mb-3 p-2 bg-dark-bg rounded border border-dark-border space-y-1">
+                <div className="flex justify-between"><span className="text-gray-500">RMSE Range</span><span className="font-mono"><span className="text-emerald-400">{sweepResults.minRmse.toFixed(2)}</span> - <span className="text-red-400">{sweepResults.maxRmse.toFixed(2)}m</span></span></div>
+                <div className="text-xxs text-yellow-400 pt-1 border-t border-dark-border">
+                  Many solutions in the green valley are equally valid
+                </div>
+                <div className="text-xxs text-gray-500">
+                  {(sweepResults.cdaValues.length * sweepResults.crrValues.length).toLocaleString()} combinations tested
+                </div>
+              </div>
+            )}
+
+            {/* Save Button */}
+            {((method === 'chung' && sim && sim.r2 > 0) || (method === 'climb' && climbResult) || (method === 'shen' && shenResult) || (method === 'sweep' && sweepResults)) && (
+              <button
+                onClick={() => setShowSavePreset(true)}
+                className="w-full py-2 text-xs font-medium text-gray-300 hover:text-white border border-dark-border hover:border-brand-primary/50 rounded transition-all hover:bg-brand-primary/10 flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                </svg>
+                Save as Preset
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Sweep Info Panel */}
+        {method === 'sweep' && sweepResults && (
+          <div className="card border-violet-500/30">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xxs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-400 border border-violet-500/30 uppercase font-medium">2D Sweep</span>
+              <h3 className="label-sm">Solution Space</h3>
+            </div>
+            <div className="text-xxs space-y-2">
+              <p className="text-gray-400">
+                <span className="text-emerald-400">Green = low RMSE</span> (good fit), <span className="text-red-400">Red = high RMSE</span> (poor fit).
+              </p>
+              <div className="p-2 bg-yellow-900/20 border border-yellow-500/30 rounded">
+                <p className="text-yellow-400 font-medium mb-1">Why is there a valley?</p>
+                <p className="text-yellow-200/70">
+                  With single-ride data, CdA and Crr are <span className="text-white">mathematically degenerate</span>. The diagonal valley shows that many different CdA/Crr combinations produce equally good fits.
+                </p>
+              </div>
+              <div className="pt-2 border-t border-dark-border">
+                <p className="text-gray-500 mb-1">What this means:</p>
+                <ul className="text-gray-400 space-y-1 list-disc list-inside">
+                  <li>Higher CdA + Lower Crr ≈ Lower CdA + Higher Crr</li>
+                  <li>You <span className="text-red-400">cannot</span> uniquely determine both from one ride</li>
+                  <li>Use <span className="text-cyan-400">Climb</span> or <span className="text-amber-400">Shen</span> methods for better separation</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Experimental Features */}
+        {(data || ((method === 'climb' || method === 'shen') && (data || data2))) && (
+          <div className="card border-yellow-500/30">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xxs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
+              <h3 className="label-sm">Advanced</h3>
+            </div>
+
+            {/* Wind */}
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs text-gray-400">Wind Correction</span>
+              <button
+                onClick={getWeather}
+                disabled={fetchingW}
+                className="btn-secondary text-xxs py-1 px-3"
+              >
+                {fetchingW ? 'Fetching...' : 'Fetch Weather'}
+              </button>
+            </div>
+            {weatherError && (
+              <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
+            )}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div>
+                <label className="text-xxs text-gray-500 mb-1 block">Speed (m/s)</label>
+                <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
+              </div>
+              <div>
+                <label className="text-xxs text-gray-500 mb-1 block">Direction (°)</label>
+                <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
+              </div>
+            </div>
+
+            {/* Time Lag */}
+            {method === 'chung' ? (
+              <div>
+                <div className="flex justify-between text-xxs mb-1">
+                  <span className="text-orange-400">Time Lag</span>
+                  <span className="text-gray-400">{offset}s</span>
+                </div>
+                <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className="slider-lag" />
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div>
+                  <div className="flex justify-between text-xxs mb-1">
+                    <span className={method === 'shen' ? 'text-amber-400' : 'text-cyan-400'}>{method === 'shen' ? 'Slow' : 'Low'} Lag</span>
+                    <span className="text-gray-400">{offset}s</span>
                   </div>
+                  <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className={`w-full ${method === 'shen' ? 'accent-amber-500' : 'accent-cyan-500'}`} />
+                </div>
+                <div>
+                  <div className="flex justify-between text-xxs mb-1">
+                    <span className={method === 'shen' ? 'text-orange-400' : 'text-yellow-400'}>{method === 'shen' ? 'Fast' : 'High'} Lag</span>
+                    <span className="text-gray-400">{offset2}s</span>
+                  </div>
+                  <input type="range" min="-5" max="5" step="0.5" value={offset2} onChange={e => setOffset2(parseFloat(e.target.value))} className={`w-full ${method === 'shen' ? 'accent-orange-500' : 'accent-yellow-500'}`} />
+                </div>
+              </div>
+            )}
+
+            {/* Low-pass Filter */}
+            <div className="mt-3 pt-3 border-t border-dark-border">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xxs text-gray-400">Low-pass Filter</span>
+                <div className="flex gap-2">
+                  <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>GPS</button>
+                  <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual</button>
+                </div>
+              </div>
+              {(filterGps || filterVirtual) && (
+                <div>
+                  <div className="flex justify-between text-xxs mb-1">
+                    <span className="text-gray-500">Intensity</span>
+                    <span className="text-white font-mono">{filterIntensity}</span>
+                  </div>
+                  <input type="range" min="1" max="10" value={filterIntensity} onChange={e => setFilterIntensity(parseInt(e.target.value))} className="w-full accent-emerald-500" />
                 </div>
               )}
             </div>
           </div>
-        </div>
-
-        {(data || (method === 'climb' && (data || data2))) && (
-          <>
-            {/* Solver */}
-            <div className="card">
-              <h3 className="label-sm mb-3">Solver</h3>
-
-              {/* Chung Method */}
-              {method === 'chung' && (
-                <>
-                  <div className="mb-3">
-                    <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
-                    <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
-                  </div>
-
-                  <button onClick={runGlobal} disabled={busy} className="btn-primary w-full">
-                    {busy ? 'Optimizing...' : 'Auto-Fit'}
-                  </button>
-                </>
-              )}
-
-              {/* Shen Method - Dual File */}
-              {method === 'shen' && (
-                <>
-                  <div className="mb-3">
-                    <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
-                    <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
-                  </div>
-
-                  {/* Files Status */}
-                  <div className={`p-2 rounded text-[10px] border mb-3 ${
-                    data && data2
-                      ? 'bg-green-900/20 border-green-500/30 text-green-400'
-                      : 'bg-yellow-900/20 border-yellow-500/30 text-yellow-400'
-                  }`}>
-                    <div className="font-medium mb-1">
-                      {data && data2 ? 'Both files loaded' : 'Load both files to run solver'}
-                    </div>
-                    <div className="text-gray-400 space-y-0.5">
-                      <div className="flex items-center gap-1">
-                        <span className={data ? 'text-amber-400' : 'text-gray-500'}>{data ? '✓' : '○'}</span>
-                        <span>Slow Accel: {fileName || 'Not loaded'}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className={data2 ? 'text-orange-400' : 'text-gray-500'}>{data2 ? '✓' : '○'}</span>
-                        <span>Fast Accel: {fileName2 || 'Not loaded'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={runShen}
-                    disabled={busy || !data || !data2}
-                    className={`w-full py-2 rounded font-medium text-xs transition-colors ${
-                      data && data2
-                        ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                        : 'bg-gray-700 text-gray-500 cursor-not-allowed'
-                    }`}
-                  >
-                    {busy ? 'Analyzing...' : 'Run Shen Method'}
-                  </button>
-
-                  {/* Current Metrics Display (for each file) */}
-                  {data && sim && (
-                    <div className="bg-dark-input p-3 rounded text-[10px] border border-dark-border mt-3">
-                      <div className="font-medium text-amber-400 mb-2">Current Metrics</div>
-                      <div className="space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Bow (Slow)</span>
-                          <span className={`font-mono font-bold ${Math.abs(currentBow || 0) < 0.5 ? 'text-green-400' : Math.abs(currentBow || 0) < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
-                            {(currentBow || 0) > 0 ? '+' : ''}{(currentBow || 0).toFixed(2)}m
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Net (Slow)</span>
-                          <span className={`font-mono font-bold ${Math.abs(sim.netElev || 0) < 1 ? 'text-green-400' : Math.abs(sim.netElev || 0) < 3 ? 'text-yellow-400' : 'text-red-400'}`}>
-                            {(sim.netElev || 0) > 0 ? '+' : ''}{(sim.netElev || 0).toFixed(2)}m
-                          </span>
-                        </div>
-                        {data2 && sim2 && (
-                          <>
-                            <div className="border-t border-dark-border my-1.5" />
-                            <div className="flex justify-between">
-                              <span className="text-gray-400">Bow (Fast)</span>
-                              <span className={`font-mono font-bold ${Math.abs(currentBow2 || 0) < 0.5 ? 'text-green-400' : Math.abs(currentBow2 || 0) < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
-                                {(currentBow2 || 0) > 0 ? '+' : ''}{(currentBow2 || 0).toFixed(2)}m
-                              </span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-gray-400">Net (Fast)</span>
-                              <span className={`font-mono font-bold ${Math.abs(sim2.netElev || 0) < 1 ? 'text-green-400' : Math.abs(sim2.netElev || 0) < 3 ? 'text-yellow-400' : 'text-red-400'}`}>
-                                {(sim2.netElev || 0) > 0 ? '+' : ''}{(sim2.netElev || 0).toFixed(2)}m
-                              </span>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                      <p className="text-gray-500 mt-2 text-[9px]">
-                        Goal: Bow ≈ 0 (straight) & Net ≈ 0 (level)
-                      </p>
-                    </div>
-                  )}
-
-                  {/* Shen Result */}
-                  {shenResult && (
-                    <div className="bg-amber-900/20 p-3 rounded text-[10px] border border-amber-500/30 mt-3">
-                      <div className="font-medium text-amber-400 mb-2">Shen Method Result</div>
-                      <div className="space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Bow (Slow)</span>
-                          <span className={`font-mono ${Math.abs(shenResult.bow1) < 0.5 ? 'text-green-400' : 'text-yellow-400'}`}>
-                            {shenResult.bow1 > 0 ? '+' : ''}{shenResult.bow1.toFixed(3)}m
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Bow (Fast)</span>
-                          <span className={`font-mono ${Math.abs(shenResult.bow2) < 0.5 ? 'text-green-400' : 'text-yellow-400'}`}>
-                            {shenResult.bow2 > 0 ? '+' : ''}{shenResult.bow2.toFixed(3)}m
-                          </span>
-                        </div>
-                        <div className="border-t border-dark-border my-2" />
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Net Elev (Slow)</span>
-                          <span className={`font-mono ${Math.abs(shenResult.netElev1) < 1 ? 'text-green-400' : 'text-yellow-400'}`}>
-                            {shenResult.netElev1 > 0 ? '+' : ''}{shenResult.netElev1.toFixed(2)}m
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Net Elev (Fast)</span>
-                          <span className={`font-mono ${Math.abs(shenResult.netElev2) < 1 ? 'text-green-400' : 'text-yellow-400'}`}>
-                            {shenResult.netElev2 > 0 ? '+' : ''}{shenResult.netElev2.toFixed(2)}m
-                          </span>
-                        </div>
-                        <div className="border-t border-dark-border my-2" />
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Avg Speed (Slow)</span>
-                          <span className="font-mono text-amber-400">{shenResult.avgSpeed1.toFixed(1)} km/h</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Avg Speed (Fast)</span>
-                          <span className="font-mono text-orange-400">{shenResult.avgSpeed2.toFixed(1)} km/h</span>
-                        </div>
-                      </div>
-                      <p className="text-gray-500 mt-2 text-[9px]">
-                        Bow ≈ 0 (straight) & Net Elev ≈ 0 (level) = correct CdA/Crr
-                      </p>
-                    </div>
-                  )}
-                </>
-              )}
-
-              {/* Climb Method */}
-              {method === 'climb' && (
-                <>
-                  <div className="mb-3">
-                    <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
-                    <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
-                  </div>
-
-                  {/* Files Status */}
-                  <div className={`p-2 rounded text-[10px] border mb-3 ${
-                    data && data2
-                      ? 'bg-green-900/20 border-green-500/30 text-green-400'
-                      : 'bg-yellow-900/20 border-yellow-500/30 text-yellow-400'
-                  }`}>
-                    <div className="font-medium mb-1">
-                      {data && data2 ? 'Both files loaded' : 'Load both files to run solver'}
-                    </div>
-                    <div className="text-gray-400 space-y-0.5">
-                      <div className="flex items-center gap-1">
-                        <span className={data ? 'text-cyan-400' : 'text-gray-500'}>{data ? '✓' : '○'}</span>
-                        <span>Low Speed: {fileName || 'Not loaded'}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className={data2 ? 'text-yellow-400' : 'text-gray-500'}>{data2 ? '✓' : '○'}</span>
-                        <span>High Speed: {fileName2 || 'Not loaded'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={runClimb}
-                    disabled={busy || !data || !data2}
-                    className={`w-full py-2 rounded font-medium text-xs transition-colors ${
-                      data && data2
-                        ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                        : 'bg-gray-700 text-gray-400 cursor-not-allowed'
-                    }`}
-                  >
-                    {busy ? 'Analyzing...' : 'Run Climb Analysis'}
-                  </button>
-
-                  {/* Climb Result */}
-                  {climbResult && (
-                    <div className="bg-emerald-900/20 p-3 rounded text-[10px] border border-emerald-500/30 mt-3">
-                      <div className="font-medium text-emerald-400 mb-2">Climb Method Result</div>
-                      <div className="space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-gray-400">Combined RMSE</span>
-                          <span className={`font-mono ${climbResult.rmse < 1 ? 'text-green-400' : climbResult.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
-                            {climbResult.rmse.toFixed(3)}m
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-cyan-400">Low Speed RMSE</span>
-                          <span className="font-mono text-cyan-400">{climbResult.rmse1.toFixed(3)}m</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-yellow-400">High Speed RMSE</span>
-                          <span className="font-mono text-yellow-400">{climbResult.rmse2.toFixed(3)}m</span>
-                        </div>
-                        <div className="flex justify-between pt-1 border-t border-dark-border mt-1">
-                          <span className="text-gray-400">R²</span>
-                          <span className={`font-mono ${climbResult.r2 > 0.95 ? 'text-green-400' : climbResult.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>
-                            {climbResult.r2.toFixed(4)}
-                          </span>
-                        </div>
-                      </div>
-                      <p className="text-gray-500 mt-2 text-[9px]">
-                        Low: {climbResult.avgSpeed1.toFixed(1)} km/h | High: {climbResult.avgSpeed2.toFixed(1)} km/h
-                      </p>
-                    </div>
-                  )}
-                </>
-              )}
-
-            </div>
-
-            {/* Fitted Values */}
-            <div className="card">
-              <h3 className="label-sm mb-3">Fitted Values</h3>
-              <div className="space-y-3">
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-green-400 font-medium">CdA</span>
-                    <span className="font-mono font-bold">{cda.toFixed(5)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0.15"
-                    max="0.5"
-                    step="0.0001"
-                    value={cda}
-                    onChange={e => setCda(parseFloat(e.target.value))}
-                    className="slider-cda"
-                  />
-                </div>
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-blue-400 font-medium">Crr</span>
-                    <span className="font-mono font-bold">{crr.toFixed(5)}</span>
-                  </div>
-                  <input
-                    type="range"
-                    min="0.002"
-                    max="0.02"
-                    step="0.0001"
-                    value={crr}
-                    onChange={e => setCrr(parseFloat(e.target.value))}
-                    className="slider-crr"
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Experimental Features */}
-            <div className="card border-yellow-500/30">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
-                <h3 className="label-sm">Experimental</h3>
-              </div>
-
-              {/* Environment */}
-              <div className="mb-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-gray-400">Wind Correction</span>
-                  <button onClick={getWeather} disabled={fetchingW} className="btn-secondary text-[10px] py-0.5 px-2">
-                    {fetchingW ? '...' : 'Fetch'}
-                  </button>
-                </div>
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block">Speed (m/s)</label>
-                    <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block">Dir (°)</label>
-                    <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
-                  </div>
-                </div>
-                {method === 'chung' ? (
-                  <div>
-                    <div className="flex justify-between text-[10px] mb-1">
-                      <span className="text-orange-400">Time Lag</span>
-                      <span className="text-gray-400">{offset}s</span>
-                    </div>
-                    <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className="slider-lag" />
-                  </div>
-                ) : method === 'shen' ? (
-                  <div className="space-y-2">
-                    <div>
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span className="text-amber-400">Slow Accel Lag</span>
-                        <span className="text-gray-400">{offset}s</span>
-                      </div>
-                      <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className="w-full accent-amber-500" />
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span className="text-orange-400">Fast Accel Lag</span>
-                        <span className="text-gray-400">{offset2}s</span>
-                      </div>
-                      <input type="range" min="-5" max="5" step="0.5" value={offset2} onChange={e => setOffset2(parseFloat(e.target.value))} className="w-full accent-orange-500" />
-                    </div>
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <div>
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span className="text-cyan-400">Low Speed Lag</span>
-                        <span className="text-gray-400">{offset}s</span>
-                      </div>
-                      <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className="w-full accent-cyan-500" />
-                    </div>
-                    <div>
-                      <div className="flex justify-between text-[10px] mb-1">
-                        <span className="text-yellow-400">High Speed Lag</span>
-                        <span className="text-gray-400">{offset2}s</span>
-                      </div>
-                      <input type="range" min="-5" max="5" step="0.5" value={offset2} onChange={e => setOffset2(parseFloat(e.target.value))} className="w-full accent-yellow-500" />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Low-pass Filter */}
-              <div className="pt-3 border-t border-dark-border">
-                <span className="text-xs text-gray-400 mb-2 block">Low-pass Filter</span>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-gray-500">GPS Elevation</span>
-                    <button
-                      onClick={() => setFilterGps(!filterGps)}
-                      className={`relative w-9 h-5 rounded-full transition-colors ${filterGps ? 'bg-emerald-600' : 'bg-gray-600'}`}
-                    >
-                      <span className={`absolute left-0 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${filterGps ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-gray-500">Virtual Elevation</span>
-                    <button
-                      onClick={() => setFilterVirtual(!filterVirtual)}
-                      className={`relative w-9 h-5 rounded-full transition-colors ${filterVirtual ? 'bg-emerald-600' : 'bg-gray-600'}`}
-                    >
-                      <span className={`absolute left-0 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${filterVirtual ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                    </button>
-                  </div>
-                  <div className={`transition-opacity ${(filterGps || filterVirtual) ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-                    <div className="flex justify-between text-[10px] mb-1">
-                      <span className="text-gray-500">Intensity</span>
-                      <span className="text-white font-mono">{filterIntensity}</span>
-                    </div>
-                    <input
-                      type="range"
-                      min="1"
-                      max="10"
-                      value={filterIntensity}
-                      onChange={e => setFilterIntensity(parseInt(e.target.value))}
-                      className="w-full accent-emerald-500"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Results Summary */}
-            {((method === 'chung' && sim && sim.r2 > 0) || (method === 'climb' && climbResult) || (method === 'shen' && shenResult)) && (
-              <div className={`card bg-gradient-to-r ${
-                method === 'climb' ? 'from-emerald-900/30' :
-                method === 'shen' ? 'from-amber-900/30' : 'from-indigo-900/30'
-              } to-dark-card ${
-                method === 'climb' ? 'border-emerald-500/30' :
-                method === 'shen' ? 'border-amber-500/30' : 'border-indigo-500/30'
-              }`}>
-                <h3 className="text-xs text-gray-400 uppercase mb-2">
-                  {method === 'climb' ? 'Climb Results' : method === 'shen' ? 'Shen Results' : 'Results'}
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <span className="text-[10px] text-gray-500">CdA</span>
-                    <div className="text-lg font-mono font-bold text-green-400">{cda.toFixed(4)}</div>
-                  </div>
-                  <div>
-                    <span className="text-[10px] text-gray-500">Crr</span>
-                    <div className="text-lg font-mono font-bold text-blue-400">{crr.toFixed(5)}</div>
-                  </div>
-                </div>
-                {method === 'climb' && climbResult && (
-                  <div className="mt-2 pt-2 border-t border-dark-border text-[10px]">
-                    <div className="flex justify-between text-gray-400">
-                      <span>Low: {climbResult.avgSpeed1.toFixed(1)} km/h</span>
-                      <span>High: {climbResult.avgSpeed2.toFixed(1)} km/h</span>
-                    </div>
-                  </div>
-                )}
-                {method === 'shen' && shenResult && (
-                  <div className="mt-2 pt-2 border-t border-dark-border text-[10px]">
-                    <div className="flex justify-between text-gray-400">
-                      <span>Slow: {shenResult.avgSpeed1.toFixed(1)} km/h</span>
-                      <span>Fast: {shenResult.avgSpeed2.toFixed(1)} km/h</span>
-                    </div>
-                  </div>
-                )}
-                <button
-                  onClick={() => setShowSavePreset(true)}
-                  className="w-full mt-3 py-2 text-xs font-medium text-gray-300 hover:text-white border border-dark-border hover:border-brand-primary/50 rounded-lg transition-all hover:bg-brand-primary/10 flex items-center justify-center gap-2"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-                  </svg>
-                  Save as Preset
-                </button>
-              </div>
-            )}
-          </>
         )}
       </div>
 
@@ -1189,42 +1178,35 @@ export const QuickTestTab = ({ presetsHook }) => {
         {/* Chart Controls */}
         {(data || ((method === 'climb' || method === 'shen') && data2)) && (
           <div className="px-6 py-2 border-b border-dark-border bg-dark-card/50">
-            {method === 'chung' ? (
-              /* Single file mode controls (Chung only) */
+            {method === 'chung' || method === 'sweep' ? (
+              /* Single file mode controls (Chung/Sweep) */
               <div className="flex items-center gap-6">
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-gray-400">Range:</span>
-                  <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
+                  <span className={`text-xs font-mono ${method === 'sweep' ? 'text-violet-400' : 'text-brand-accent'}`}>{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
                   <button
                     onClick={() => setRange([0, 100])}
-                    className="text-[10px] text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                    className="text-xxs text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                     title="Reset to full range"
                   >
                     Reset
                   </button>
                 </div>
+                {method === 'sweep' && sweepResults && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xxs px-2 py-0.5 rounded bg-violet-900/50 text-violet-400 border border-violet-500/30">
+                      {(sweepResults.cdaValues.length * sweepResults.crrValues.length).toLocaleString()} solutions
+                    </span>
+                    <span className="text-xxs text-gray-500">Click heatmap to explore</span>
+                    <span className="text-xxs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-400 border border-yellow-500/30">
+                      Valley = degenerate solutions
+                    </span>
+                  </div>
+                )}
                 {(filterGps || filterVirtual) && (
-                  <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
+                  <span className="text-xxs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
                     Filtered
                   </span>
-                )}
-
-                {/* Prominent RMSE & R² Display */}
-                {sim && !sim.emptyRange && (
-                  <div className="flex items-center gap-4 ml-auto">
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">RMSE</span>
-                      <span className={`text-lg font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
-                        {sim.rmse.toFixed(2)}m
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">R²</span>
-                      <span className={`text-lg font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>
-                        {sim.r2.toFixed(4)}
-                      </span>
-                    </div>
-                  </div>
                 )}
               </div>
             ) : method === 'shen' ? (
@@ -1234,13 +1216,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {data && (
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-amber-400 uppercase tracking-wider w-24">Slow Accel</span>
-                    <span className="text-[10px] font-mono text-amber-400">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
+                    <span className="text-xxs font-mono text-amber-400">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
                     {sim && !sim.emptyRange && (
-                      <span className="text-[10px] text-amber-400 font-mono">Bow: {(currentBow || 0).toFixed(2)}m</span>
+                      <span className="text-xxs text-amber-400 font-mono">Bow: {(currentBow || 0).toFixed(2)}m</span>
                     )}
                     <button
                       onClick={() => setRange([0, 100])}
-                      className="text-[10px] text-gray-500 hover:text-amber-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                      className="text-xxs text-gray-500 hover:text-amber-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                     >
                       Reset
                     </button>
@@ -1250,13 +1232,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {data2 && (
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-orange-400 uppercase tracking-wider w-24">Fast Accel</span>
-                    <span className="text-[10px] font-mono text-orange-400">{Math.round(distanceRange2[0])}m - {Math.round(distanceRange2[1])}m</span>
+                    <span className="text-xxs font-mono text-orange-400">{Math.round(distanceRange2[0])}m - {Math.round(distanceRange2[1])}m</span>
                     {sim2 && !sim2.emptyRange && (
-                      <span className="text-[10px] text-orange-400 font-mono">Bow: {(currentBow2 || 0).toFixed(2)}m</span>
+                      <span className="text-xxs text-orange-400 font-mono">Bow: {(currentBow2 || 0).toFixed(2)}m</span>
                     )}
                     <button
                       onClick={() => setRange2([0, 100])}
-                      className="text-[10px] text-gray-500 hover:text-orange-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                      className="text-xxs text-gray-500 hover:text-orange-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                     >
                       Reset
                     </button>
@@ -1266,25 +1248,25 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {shenResult && (
                   <div className="flex items-center gap-4 pt-1 border-t border-dark-border mt-2 flex-wrap">
                     <div className="flex items-center gap-2 px-3 py-1 rounded bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">Bow (Slow)</span>
+                      <span className="text-xxs text-gray-500 uppercase">Bow (Slow)</span>
                       <span className={`text-sm font-mono font-bold ${Math.abs(shenResult.bow1) < 0.5 ? 'text-emerald-400' : 'text-yellow-400'}`}>
                         {shenResult.bow1.toFixed(2)}m
                       </span>
                     </div>
                     <div className="flex items-center gap-2 px-3 py-1 rounded bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">Bow (Fast)</span>
+                      <span className="text-xxs text-gray-500 uppercase">Bow (Fast)</span>
                       <span className={`text-sm font-mono font-bold ${Math.abs(shenResult.bow2) < 0.5 ? 'text-emerald-400' : 'text-yellow-400'}`}>
                         {shenResult.bow2.toFixed(2)}m
                       </span>
                     </div>
                     <div className="flex items-center gap-2 px-3 py-1 rounded bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">Net (Slow)</span>
+                      <span className="text-xxs text-gray-500 uppercase">Net (Slow)</span>
                       <span className={`text-sm font-mono font-bold ${Math.abs(shenResult.netElev1) < 1 ? 'text-emerald-400' : 'text-yellow-400'}`}>
                         {shenResult.netElev1.toFixed(2)}m
                       </span>
                     </div>
                     <div className="flex items-center gap-2 px-3 py-1 rounded bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">Net (Fast)</span>
+                      <span className="text-xxs text-gray-500 uppercase">Net (Fast)</span>
                       <span className={`text-sm font-mono font-bold ${Math.abs(shenResult.netElev2) < 1 ? 'text-emerald-400' : 'text-yellow-400'}`}>
                         {shenResult.netElev2.toFixed(2)}m
                       </span>
@@ -1299,13 +1281,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {data && (
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider w-24">Low Speed</span>
-                    <span className="text-[10px] font-mono text-cyan-400">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
+                    <span className="text-xxs font-mono text-cyan-400">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
                     {sim && !sim.emptyRange && (
-                      <span className="text-[10px] text-cyan-400 font-mono">RMSE: {sim.rmse.toFixed(2)}m</span>
+                      <span className="text-xxs text-cyan-400 font-mono">RMSE: {sim.rmse.toFixed(2)}m</span>
                     )}
                     <button
                       onClick={() => setRange([0, 100])}
-                      className="text-[10px] text-gray-500 hover:text-cyan-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                      className="text-xxs text-gray-500 hover:text-cyan-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                     >
                       Reset
                     </button>
@@ -1315,13 +1297,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {data2 && (
                   <div className="flex items-center gap-4">
                     <span className="text-xs font-bold text-yellow-400 uppercase tracking-wider w-24">High Speed</span>
-                    <span className="text-[10px] font-mono text-yellow-400">{Math.round(distanceRange2[0])}m - {Math.round(distanceRange2[1])}m</span>
+                    <span className="text-xxs font-mono text-yellow-400">{Math.round(distanceRange2[0])}m - {Math.round(distanceRange2[1])}m</span>
                     {sim2 && !sim2.emptyRange && (
-                      <span className="text-[10px] text-yellow-400 font-mono">RMSE: {sim2.rmse.toFixed(2)}m</span>
+                      <span className="text-xxs text-yellow-400 font-mono">RMSE: {sim2.rmse.toFixed(2)}m</span>
                     )}
                     <button
                       onClick={() => setRange2([0, 100])}
-                      className="text-[10px] text-gray-500 hover:text-yellow-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                      className="text-xxs text-gray-500 hover:text-yellow-400 px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                     >
                       Reset
                     </button>
@@ -1331,13 +1313,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {climbResult && (
                   <div className="flex items-center gap-4 pt-1 border-t border-dark-border mt-2">
                     <div className="flex items-center gap-2 px-3 py-1 rounded bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">Combined RMSE</span>
+                      <span className="text-xxs text-gray-500 uppercase">Combined RMSE</span>
                       <span className={`text-sm font-mono font-bold ${climbResult.rmse < 1 ? 'text-emerald-400' : climbResult.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
                         {climbResult.rmse.toFixed(2)}m
                       </span>
                     </div>
                     <div className="flex items-center gap-2 px-3 py-1 rounded bg-dark-bg border border-dark-border">
-                      <span className="text-[10px] text-gray-500 uppercase">R²</span>
+                      <span className="text-xxs text-gray-500 uppercase">R²</span>
                       <span className={`text-sm font-mono font-bold ${climbResult.r2 > 0.95 ? 'text-emerald-400' : climbResult.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>
                         {climbResult.r2.toFixed(4)}
                       </span>
@@ -1355,6 +1337,121 @@ export const QuickTestTab = ({ presetsHook }) => {
               <div className="flex flex-col items-center justify-center h-full text-yellow-500 space-y-4">
                 <p className="text-lg font-medium">Range too narrow</p>
                 <p className="text-sm text-gray-500">Adjust the crop sliders</p>
+              </div>
+            ) : method === 'sweep' ? (
+              /* Sweep mode: 2D Heatmap + Virtual elevation */
+              <div className="flex flex-col h-full">
+                {/* 2D Solution Space Heatmap */}
+                {sweepResults && (
+                  <div className="h-[45%] border-b border-dark-border">
+                    <Plot
+                      data={[
+                        // Heatmap of RMSE values
+                        {
+                          x: sweepResults.cdaValues,
+                          y: sweepResults.crrValues,
+                          z: sweepResults.rmseGrid[0].map((_, colIdx) =>
+                            sweepResults.rmseGrid.map(row => row[colIdx])
+                          ),
+                          type: 'heatmap',
+                          colorscale: [
+                            [0, '#10b981'],
+                            [0.25, '#22d3ee'],
+                            [0.5, '#eab308'],
+                            [0.75, '#f97316'],
+                            [1, '#ef4444']
+                          ],
+                          zmin: sweepResults.minRmse,
+                          zmax: Math.min(sweepResults.maxRmse, sweepResults.minRmse * 3),
+                          colorbar: {
+                            title: 'RMSE (m)',
+                            titleside: 'right',
+                            thickness: 15,
+                            len: 0.9
+                          },
+                          hovertemplate: 'CdA: %{x:.3f}<br>Crr: %{y:.5f}<br>RMSE: %{z:.3f}m<extra></extra>'
+                        },
+                        // Contour lines for better visualization
+                        {
+                          x: sweepResults.cdaValues,
+                          y: sweepResults.crrValues,
+                          z: sweepResults.rmseGrid[0].map((_, colIdx) =>
+                            sweepResults.rmseGrid.map(row => row[colIdx])
+                          ),
+                          type: 'contour',
+                          contours: {
+                            coloring: 'lines',
+                            showlabels: true,
+                            labelfont: { size: 9, color: 'white' }
+                          },
+                          line: { color: 'rgba(255,255,255,0.3)', width: 1 },
+                          showscale: false,
+                          hoverinfo: 'skip'
+                        },
+                        // Current selection marker
+                        {
+                          x: [cda],
+                          y: [crr],
+                          mode: 'markers',
+                          type: 'scatter',
+                          name: 'Selected',
+                          marker: { size: 16, color: '#f0abfc', symbol: 'x', line: { color: '#a855f7', width: 3 } },
+                          hoverinfo: 'skip'
+                        }
+                      ]}
+                      layout={{
+                        autosize: true,
+                        paper_bgcolor: '#0f172a',
+                        plot_bgcolor: '#0f172a',
+                        font: { color: '#94a3b8', size: 11 },
+                        margin: { t: 40, l: 60, r: 80, b: 50 },
+                        title: { text: 'CdA/Crr Solution Space (RMSE)', font: { size: 14, color: '#e2e8f0' } },
+                        xaxis: { title: 'CdA (m²)', gridcolor: '#1e293b' },
+                        yaxis: { title: 'Crr', gridcolor: '#1e293b' },
+                        showlegend: true,
+                        legend: { orientation: 'h', y: -0.15, x: 0.5, xanchor: 'center', font: { size: 10 } },
+                        hovermode: 'closest'
+                      }}
+                      onClick={handleSweepClick}
+                      useResizeHandler={true}
+                      style={{ width: '100%', height: '100%' }}
+                      config={{ displayModeBar: false, responsive: true }}
+                    />
+                  </div>
+                )}
+                {/* Virtual elevation chart */}
+                <div className={sweepResults ? 'h-[55%]' : 'h-full'}>
+                  <Plot
+                    data={(() => {
+                      if (!sim || sim.emptyRange) return []
+                      const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
+                      const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
+
+                      return [
+                        { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
+                        { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#a78bfa', width: 2 } },
+                        { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' }
+                      ]
+                    })()}
+                    layout={{
+                      autosize: true,
+                      paper_bgcolor: '#0f172a',
+                      plot_bgcolor: '#0f172a',
+                      font: { color: '#94a3b8', size: 11 },
+                      margin: { t: 30, l: 50, r: 20, b: 40 },
+                      grid: { rows: 2, columns: 1, pattern: 'independent' },
+                      showlegend: true,
+                      legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
+                      xaxis: { title: 'Distance (m)', gridcolor: '#1e293b', range: distanceRange },
+                      yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.35, 1] },
+                      yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', domain: [0, 0.28] }
+                    }}
+                    onRelayout={handleRelayout}
+                    useResizeHandler={true}
+                    style={{ width: '100%', height: '100%' }}
+                    config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
+                  />
+                </div>
               </div>
             ) : method === 'chung' ? (
               /* Single file chart with rangeslider (Chung only) */

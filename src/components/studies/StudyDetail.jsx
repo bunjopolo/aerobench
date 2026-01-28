@@ -24,7 +24,7 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
             <div className="flex items-center gap-2 flex-wrap">
               <h4 className="font-semibold text-white text-lg truncate">{variation.name}</h4>
               {isBaseline && (
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-brand-primary/20 text-brand-primary border border-brand-primary/30 font-medium uppercase tracking-wide">
+                <span className="text-xxs px-2 py-0.5 rounded-full bg-brand-primary/20 text-brand-primary border border-brand-primary/30 font-medium uppercase tracking-wide">
                   Baseline
                 </span>
               )}
@@ -90,12 +90,12 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
           <div className="grid grid-cols-3 gap-3">
             {/* CdA */}
             <div className="bg-dark-bg rounded-lg p-3">
-              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">CdA</div>
+              <div className="text-xxs text-gray-500 uppercase tracking-wide mb-1">CdA</div>
               <div className="text-lg font-mono font-semibold text-green-400">
                 {variation.avg_cda.toFixed(4)}
               </div>
               {variation.std_cda !== null && variation.std_cda > 0 && (
-                <div className="text-[10px] text-gray-500 font-mono">
+                <div className="text-xxs text-gray-500 font-mono">
                   ±{variation.std_cda.toFixed(4)}
                 </div>
               )}
@@ -103,7 +103,7 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
 
             {/* Crr */}
             <div className="bg-dark-bg rounded-lg p-3">
-              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Crr</div>
+              <div className="text-xxs text-gray-500 uppercase tracking-wide mb-1">Crr</div>
               <div className="text-lg font-mono font-semibold text-blue-400">
                 {variation.avg_crr?.toFixed(5) || '—'}
               </div>
@@ -111,7 +111,7 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
 
             {/* Runs */}
             <div className="bg-dark-bg rounded-lg p-3">
-              <div className="text-[10px] text-gray-500 uppercase tracking-wide mb-1">Runs</div>
+              <div className="text-xxs text-gray-500 uppercase tracking-wide mb-1">Runs</div>
               <div className="text-lg font-semibold text-white">
                 {variation.run_count}
                 {variation.total_runs > variation.run_count && (
@@ -203,19 +203,19 @@ const RunCard = ({ run, onToggleValid, onDelete, onRename }) => {
               </button>
             )}
             {!run.is_valid && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-red-500/20 text-red-400">
+              <span className="text-xxs px-2 py-0.5 rounded bg-red-500/20 text-red-400">
                 Excluded
               </span>
             )}
           </div>
           <div className="flex items-center gap-2 mt-1">
             {run.gpx_filename && (
-              <p className="text-[10px] text-gray-500 truncate max-w-[200px]" title={run.gpx_filename}>
+              <p className="text-xxs text-gray-500 truncate max-w-[200px]" title={run.gpx_filename}>
                 {run.gpx_filename}
               </p>
             )}
-            <span className="text-[10px] text-gray-600">•</span>
-            <p className="text-[10px] text-gray-500">
+            <span className="text-xxs text-gray-600">•</span>
+            <p className="text-xxs text-gray-500">
               {run.ride_date ? new Date(run.ride_date).toLocaleDateString() : 'No date'}
             </p>
           </div>
@@ -229,7 +229,7 @@ const RunCard = ({ run, onToggleValid, onDelete, onRename }) => {
               <span className="text-gray-600 mx-1">/</span>
               <span className="text-blue-400">{run.fitted_crr?.toFixed(5) || '—'}</span>
             </div>
-            <div className="text-[10px] text-gray-500">CdA / Crr</div>
+            <div className="text-xxs text-gray-500">CdA / Crr</div>
           </div>
 
           {/* Actions */}

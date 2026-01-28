@@ -5,7 +5,7 @@ export const VARIABLE_TYPES = {
   tires: {
     id: 'tires',
     label: 'Tires',
-    icon: '⚫',
+    icon: 'tire',
     inputType: 'text',
     placeholder: 'e.g., GP5000 25c',
     description: 'Compare different tire models or widths',
@@ -14,7 +14,7 @@ export const VARIABLE_TYPES = {
   tire_pressure: {
     id: 'tire_pressure',
     label: 'Tire Pressure',
-    icon: '💨',
+    icon: 'pressure',
     inputType: 'pressure',
     placeholder: { front: 'Front PSI', rear: 'Rear PSI' },
     description: 'Find your optimal tire pressure',
@@ -28,7 +28,7 @@ export const VARIABLE_TYPES = {
   position: {
     id: 'position',
     label: 'Position',
-    icon: '🚴',
+    icon: 'position',
     inputType: 'text',
     description: 'Compare different riding positions',
     formatValue: (v) => v.value_text || ''
@@ -36,7 +36,7 @@ export const VARIABLE_TYPES = {
   custom: {
     id: 'custom',
     label: 'Other / Custom',
-    icon: '🔧',
+    icon: 'custom',
     inputType: 'text',
     customLabel: true,
     placeholder: 'Enter value',

@@ -56,6 +56,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   // Solver
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
+  const [weatherError, setWeatherError] = useState(null)
   const [maxIterations, setMaxIterations] = useState(500)
   const [saved, setSaved] = useState(false)
 
@@ -178,25 +179,38 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const getWeather = async () => {
     if (!data || !startTime) return
     setFetchingW(true)
+    setWeatherError(null)
     try {
       const mid = Math.floor(data.lat.length / 2)
       const ds = startTime.toISOString().split('T')[0]
       const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m`
       const r = await fetch(u)
+      if (!r.ok) throw new Error('Weather service unavailable')
       const j = await r.json()
       if (j.hourly) {
         const h = startTime.getUTCHours()
         if (j.hourly.wind_speed_10m[h] !== undefined) {
           setWSpd(parseFloat((j.hourly.wind_speed_10m[h] / 3.6 * 0.6).toFixed(2)))
           setWDir(j.hourly.wind_direction_10m[h])
+        } else {
+          setWeatherError('No data for this time')
         }
+      } else {
+        setWeatherError('No weather data available')
       }
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error(e)
+      setWeatherError('Failed to fetch')
+    }
     setFetchingW(false)
   }
 
+  // Saving state
+  const [saving, setSaving] = useState(false)
+
   // Save run
   const saveRun = async () => {
+    setSaving(true)
     try {
       const runNumber = runs.length + 1
       await createRun({
@@ -220,6 +234,8 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       }, 1500)
     } catch (err) {
       setErrorDialog({ open: true, message: err.message })
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -267,11 +283,17 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     grid: { rows: 3, columns: 1, pattern: 'independent' },
     showlegend: true,
     legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
+    hovermode: 'x',
     xaxis: {
       title: 'Distance (m)',
       gridcolor: '#1e293b',
       anchor: 'y3',
       range: distanceRange,
+      showspikes: true,
+      spikemode: 'across',
+      spikethickness: 1,
+      spikecolor: '#6366f1',
+      spikedash: 'solid',
       rangeslider: {
         visible: true,
         thickness: 0.08,
@@ -412,7 +434,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               <h3 className="label-sm mb-3">Solver</h3>
 
               <div className="mb-3">
-                <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
+                <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
                 <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
               </div>
 
@@ -461,7 +483,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             {/* Experimental Features */}
             <div className="card border-yellow-500/30">
               <div className="flex items-center gap-2 mb-3">
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
+                <span className="text-xxs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
                 <h3 className="label-sm">Experimental</h3>
               </div>
 
@@ -469,22 +491,25 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               <div className="mb-4">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs text-gray-400">Wind Correction</span>
-                  <button onClick={getWeather} disabled={fetchingW} className="btn-secondary text-[10px] py-0.5 px-2">
+                  <button onClick={getWeather} disabled={fetchingW} className="btn-secondary text-xxs py-0.5 px-2">
                     {fetchingW ? '...' : 'Fetch'}
                   </button>
                 </div>
+                {weatherError && (
+                  <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
+                )}
                 <div className="grid grid-cols-2 gap-2 mb-2">
                   <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block">Speed (m/s)</label>
+                    <label className="text-xxs text-gray-500 mb-1 block">Speed (m/s)</label>
                     <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
                   </div>
                   <div>
-                    <label className="text-[10px] text-gray-500 mb-1 block">Dir (°)</label>
+                    <label className="text-xxs text-gray-500 mb-1 block">Dir (°)</label>
                     <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
                   </div>
                 </div>
                 <div>
-                  <div className="flex justify-between text-[10px] mb-1">
+                  <div className="flex justify-between text-xxs mb-1">
                     <span className="text-orange-400">Time Lag</span>
                     <span className="text-gray-400">{offset}s</span>
                   </div>
@@ -498,7 +523,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                   <span className="text-xs text-gray-400">Air Density (kg/m³)</span>
                   <button
                     onClick={() => setShowRhoCalc(!showRhoCalc)}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300"
+                    className="text-xxs text-indigo-400 hover:text-indigo-300"
                   >
                     {showRhoCalc ? 'Hide' : 'Calculator'}
                   </button>
@@ -513,10 +538,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
                 {showRhoCalc && (
                   <div className="mt-3 p-3 bg-dark-bg rounded border border-dark-border space-y-3">
-                    <p className="text-[10px] text-gray-400 font-medium">Calculate from conditions:</p>
+                    <p className="text-xxs text-gray-400 font-medium">Calculate from conditions:</p>
 
                     <div>
-                      <label className="text-[10px] text-gray-500 mb-1 block">Temperature (°C)</label>
+                      <label className="text-xxs text-gray-500 mb-1 block">Temperature (°C)</label>
                       <input
                         type="number"
                         step="0.1"
@@ -530,13 +555,13 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                       <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-2">
                         <button
                           onClick={() => setRhoUseElevation(true)}
-                          className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                          className={`px-2 py-1 rounded text-xxs font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
                         >
                           Elevation
                         </button>
                         <button
                           onClick={() => setRhoUseElevation(false)}
-                          className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                          className={`px-2 py-1 rounded text-xxs font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
                         >
                           Pressure
                         </button>
@@ -544,7 +569,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
                       {rhoUseElevation ? (
                         <div>
-                          <label className="text-[10px] text-gray-500 mb-1 block">Elevation (m)</label>
+                          <label className="text-xxs text-gray-500 mb-1 block">Elevation (m)</label>
                           <input
                             type="number"
                             step="1"
@@ -555,7 +580,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                         </div>
                       ) : (
                         <div>
-                          <label className="text-[10px] text-gray-500 mb-1 block">Pressure (hPa)</label>
+                          <label className="text-xxs text-gray-500 mb-1 block">Pressure (hPa)</label>
                           <input
                             type="number"
                             step="0.1"
@@ -568,7 +593,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     </div>
 
                     <div>
-                      <label className="text-[10px] text-gray-500 mb-1 block">Relative Humidity (%)</label>
+                      <label className="text-xxs text-gray-500 mb-1 block">Relative Humidity (%)</label>
                       <input
                         type="number"
                         step="1"
@@ -582,7 +607,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
                     <div className="pt-2 border-t border-dark-border">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] text-gray-400">Calculated:</span>
+                        <span className="text-xxs text-gray-400">Calculated:</span>
                         <span className="text-sm font-mono font-bold text-cyan-400">{getCalculatedRho()} kg/m³</span>
                       </div>
                       <button
@@ -601,7 +626,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 <span className="text-xs text-gray-400 mb-2 block">Low-pass Filter</span>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-gray-500">GPS Elevation</span>
+                    <span className="text-xxs text-gray-500">GPS Elevation</span>
                     <button
                       onClick={() => setFilterGps(!filterGps)}
                       className={`relative w-9 h-5 rounded-full transition-colors ${filterGps ? 'bg-emerald-600' : 'bg-gray-600'}`}
@@ -610,7 +635,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     </button>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-gray-500">Virtual Elevation</span>
+                    <span className="text-xxs text-gray-500">Virtual Elevation</span>
                     <button
                       onClick={() => setFilterVirtual(!filterVirtual)}
                       className={`relative w-9 h-5 rounded-full transition-colors ${filterVirtual ? 'bg-emerald-600' : 'bg-gray-600'}`}
@@ -619,7 +644,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     </button>
                   </div>
                   <div className={`transition-opacity ${(filterGps || filterVirtual) ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
-                    <div className="flex justify-between text-[10px] mb-1">
+                    <div className="flex justify-between text-xxs mb-1">
                       <span className="text-gray-500">Intensity</span>
                       <span className="text-white font-mono">{filterIntensity}</span>
                     </div>
@@ -639,14 +664,16 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             {/* Save Run Button */}
             <button
               onClick={saveRun}
-              disabled={saved}
+              disabled={saved || saving}
               className={`w-full py-2 rounded font-medium text-sm transition-all ${
                 saved
                   ? 'bg-green-600 text-white'
-                  : 'bg-brand-primary hover:bg-indigo-600 text-white'
+                  : saving
+                    ? 'bg-gray-600 text-gray-300 cursor-wait'
+                    : 'bg-brand-primary hover:bg-indigo-600 text-white'
               }`}
             >
-              {saved ? 'Saved!' : 'Save Run'}
+              {saved ? 'Saved!' : saving ? 'Saving...' : 'Save Run'}
             </button>
           </>
         )}
@@ -662,14 +689,14 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
               <button
                 onClick={() => setRange([0, 100])}
-                className="text-[10px] text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                className="text-xxs text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                 title="Reset to full range"
               >
                 Reset
               </button>
             </div>
             {(filterGps || filterVirtual) && (
-              <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
+              <span className="text-xxs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
                 Filtered
               </span>
             )}
@@ -678,13 +705,13 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             {sim && !sim.emptyRange && (
               <div className="flex items-center gap-4 ml-auto">
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-bg border border-dark-border">
-                  <span className="text-[10px] text-gray-500 uppercase">RMSE</span>
+                  <span className="text-xxs text-gray-500 uppercase">RMSE</span>
                   <span className={`text-lg font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
                     {sim.rmse.toFixed(2)}m
                   </span>
                 </div>
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-bg border border-dark-border">
-                  <span className="text-[10px] text-gray-500 uppercase">R²</span>
+                  <span className="text-xxs text-gray-500 uppercase">R²</span>
                   <span className={`text-lg font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>
                     {sim.r2.toFixed(4)}
                   </span>

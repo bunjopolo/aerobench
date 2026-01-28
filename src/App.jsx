@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { AuthProvider, useAuth } from './hooks/useAuth.jsx'
 import { usePhysicsPresets } from './hooks/usePhysicsPresets'
+import { useAnalytics } from './hooks/useAnalytics'
 import { LoginPage } from './components/auth/LoginPage'
 import { UserMenu } from './components/auth/UserMenu'
 import { EstimatorTab } from './components/estimator/EstimatorTab'
@@ -10,16 +11,31 @@ import { QuickTestTab } from './components/quicktest/QuickTestTab'
 import { GuideTab } from './components/guide/GuideTab'
 import { ValidationTab } from './components/validation/ValidationTab'
 import { HelpTab } from './components/help'
+import { AdminTab } from './components/admin/AdminTab'
 import { PrivacyPolicy, TermsOfService, CookieNotice } from './components/legal'
 import { ContactModal } from './components/ui'
 
+// Admin email from environment
+const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
+
 const AppContent = () => {
-  const { isAuthenticated, loading: authLoading } = useAuth()
+  const { user, isAuthenticated, loading: authLoading } = useAuth()
   const presetsHook = usePhysicsPresets()
+  const { trackPageView } = useAnalytics()
   const [activeTab, setActiveTab] = useState('dashboard')
   const [legalPage, setLegalPage] = useState(null)
   const [showContact, setShowContact] = useState(false)
   const [selectedStudyId, setSelectedStudyId] = useState(null)
+
+  // Check if user is admin
+  const isAdmin = user?.email === ADMIN_EMAIL
+
+  // Track page views when tab changes
+  useEffect(() => {
+    if (isAuthenticated && activeTab) {
+      trackPageView(activeTab)
+    }
+  }, [activeTab, isAuthenticated, trackPageView])
 
   const handleStudyClick = (studyId) => {
     setSelectedStudyId(studyId)
@@ -45,15 +61,6 @@ const AppContent = () => {
     return <TermsOfService onBack={() => setLegalPage(null)} />
   }
 
-  if (!isAuthenticated) {
-    return (
-      <>
-        <LoginPage onShowPrivacy={() => setLegalPage('privacy')} onShowTerms={() => setLegalPage('terms')} />
-        <CookieNotice onShowPrivacy={() => setLegalPage('privacy')} />
-      </>
-    )
-  }
-
   return (
     <div className="flex h-screen overflow-hidden text-sm">
       {/* SIDEBAR */}
@@ -64,7 +71,7 @@ const AppContent = () => {
             <h1 className="text-lg font-bold text-white flex items-center gap-2">
               AeroBench
             </h1>
-            <UserMenu />
+            {isAuthenticated ? <UserMenu /> : null}
           </div>
           <p className="text-xs text-gray-500 mt-1">Virtual Elevation Analysis</p>
         </div>
@@ -163,6 +170,23 @@ const AppContent = () => {
               </svg>
               Help
             </button>
+
+            {/* Admin tab - only visible to admin */}
+            {isAdmin && (
+              <button
+                className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 mt-4 ${
+                  activeTab === 'admin'
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                    : 'text-red-400/60 hover:text-red-400 hover:bg-red-500/10'
+                }`}
+                onClick={() => setActiveTab('admin')}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                </svg>
+                Admin
+              </button>
+            )}
           </div>
         </nav>
 
@@ -176,40 +200,44 @@ const AppContent = () => {
           </div>
         </div>
 
-        {/* Support section */}
-        <div className="px-4 pb-4">
-          <form action="https://www.paypal.com/donate" method="post" target="_blank">
-            <input type="hidden" name="business" value="PJXRHYBZ4CRSA" />
-            <input type="hidden" name="no_recurring" value="0" />
-            <input type="hidden" name="item_name" value="All donations go toward hosting fees. Thanks for your support!" />
-            <input type="hidden" name="currency_code" value="CAD" />
-            <button
-              type="submit"
-              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg"
-            >
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 2.27A.77.77 0 0 1 5.7 1.614h6.932c2.293 0 3.996.6 5.06 1.783.473.525.797 1.118.967 1.763.18.677.209 1.466.089 2.348-.018.13-.04.265-.066.406l-.006.034v.306l.238.137c.201.115.37.24.515.383.353.35.587.79.696 1.31.111.53.099 1.163-.036 1.88-.156.828-.438 1.543-.836 2.122-.362.527-.83.972-1.385 1.316-.535.331-1.16.584-1.856.75-.678.163-1.436.245-2.253.245h-.534c-.403 0-.793.146-1.096.41-.304.264-.497.632-.545 1.029l-.04.306-.677 4.29-.03.216c-.004.032-.013.064-.028.093a.087.087 0 0 1-.062.051H7.076z"/>
-              </svg>
-              Support the App
-            </button>
-          </form>
-          <p className="text-xs text-gray-500 text-center mt-2">
-            Help cover server costs
-          </p>
-        </div>
+        {isAuthenticated ? (
+          <>
+            {/* Support section */}
+            <div className="px-4 pb-4">
+              <form action="https://www.paypal.com/donate" method="post" target="_blank">
+                <input type="hidden" name="business" value="PJXRHYBZ4CRSA" />
+                <input type="hidden" name="no_recurring" value="0" />
+                <input type="hidden" name="item_name" value="All donations go toward hosting fees. Thanks for your support!" />
+                <input type="hidden" name="currency_code" value="CAD" />
+                <button
+                  type="submit"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg"
+                >
+                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 2.27A.77.77 0 0 1 5.7 1.614h6.932c2.293 0 3.996.6 5.06 1.783.473.525.797 1.118.967 1.763.18.677.209 1.466.089 2.348-.018.13-.04.265-.066.406l-.006.034v.306l.238.137c.201.115.37.24.515.383.353.35.587.79.696 1.31.111.53.099 1.163-.036 1.88-.156.828-.438 1.543-.836 2.122-.362.527-.83.972-1.385 1.316-.535.331-1.16.584-1.856.75-.678.163-1.436.245-2.253.245h-.534c-.403 0-.793.146-1.096.41-.304.264-.497.632-.545 1.029l-.04.306-.677 4.29-.03.216c-.004.032-.013.064-.028.093a.087.087 0 0 1-.062.051H7.076z"/>
+                  </svg>
+                  Support the App
+                </button>
+              </form>
+              <p className="text-xs text-gray-500 text-center mt-2">
+                Help cover server costs
+              </p>
+            </div>
 
-        {/* Contact link */}
-        <div className="px-4 pb-2">
-          <button
-            onClick={() => setShowContact(true)}
-            className="w-full flex items-center justify-center gap-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-dark-card rounded-lg transition-colors text-sm"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-            </svg>
-            Contact / Feedback
-          </button>
-        </div>
+            {/* Contact link */}
+            <div className="px-4 pb-2">
+              <button
+                onClick={() => setShowContact(true)}
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 text-gray-400 hover:text-white hover:bg-dark-card rounded-lg transition-colors text-sm"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                Contact / Feedback
+              </button>
+            </div>
+          </>
+        ) : null}
 
         {/* Footer Links */}
         <div className="p-4 border-t border-dark-border">
@@ -236,6 +264,7 @@ const AppContent = () => {
           {activeTab === 'guide' && <GuideTab />}
           {activeTab === 'validation' && <ValidationTab />}
           {activeTab === 'help' && <HelpTab />}
+          {activeTab === 'admin' && isAdmin && <AdminTab />}
         </div>
       </div>
 

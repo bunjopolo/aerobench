@@ -8,7 +8,9 @@ export const LoginPage = ({ onShowPrivacy, onShowTerms }) => {
       <div className="card max-w-md w-full mx-4 p-8">
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-white flex items-center justify-center gap-3">
-            <span className="text-4xl">🚴</span>
+            <svg className="w-10 h-10 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
             AeroBench
           </h1>
           <p className="text-gray-400 mt-2">

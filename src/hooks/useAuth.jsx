@@ -32,16 +32,6 @@ export const AuthProvider = ({ children }) => {
     if (error) throw error
   }
 
-  const signInWithGithub = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'github',
-      options: {
-        redirectTo: window.location.origin
-      }
-    })
-    if (error) throw error
-  }
-
   const signOut = async () => {
     const { error } = await supabase.auth.signOut()
     if (error) throw error
@@ -58,7 +48,6 @@ export const AuthProvider = ({ children }) => {
     user,
     loading,
     signInWithGoogle,
-    signInWithGithub,
     signOut,
     deleteAccount,
     isAuthenticated: !!user

@@ -1,9 +1,101 @@
 import { useState, useMemo } from 'react'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { parseRouteGPX } from '../../lib/gpxParser'
-import { solveVelocity, simulateRoute, safeNum } from '../../lib/physics'
+import { solveVelocity, simulateRoute, safeNum, GRAVITY } from '../../lib/physics'
 import { calculateAirDensity } from '../../lib/airDensity'
 import { PresetSelector } from '../presets'
+
+// Calculate power breakdown at a given speed
+const calculatePowerBreakdown = (velocity, power, grade, mass, cda, crr, rho, eff, windSpeed = 0) => {
+  const v = Math.max(0.1, velocity)
+  const theta = Math.atan(grade / 100)
+
+  // Drivetrain losses
+  const drivetrainLoss = power * (1 - eff)
+
+  // Rolling resistance power
+  const rollingPower = mass * GRAVITY * crr * Math.cos(theta) * v
+
+  // Gravity power (positive = climbing, negative = descending)
+  const gravityPower = mass * GRAVITY * Math.sin(theta) * v
+
+  // Aero power (including wind effect)
+  // windSpeed positive = headwind, negative = tailwind
+  const vAir = v + windSpeed
+  const aeroPower = 0.5 * rho * cda * vAir * vAir * v
+
+  return {
+    aero: aeroPower,
+    rolling: rollingPower,
+    gravity: gravityPower,
+    drivetrain: drivetrainLoss,
+    total: aeroPower + rollingPower + gravityPower + drivetrainLoss
+  }
+}
+
+// Power breakdown bar component
+const PowerBreakdown = ({ breakdown, power }) => {
+  const { aero, rolling, gravity, drivetrain } = breakdown
+
+  // Only show positive resistance components for the bar
+  const resistances = [
+    { key: 'aero', label: 'Aero', value: Math.max(0, aero), color: 'bg-sky-500' },
+    { key: 'rolling', label: 'Rolling', value: Math.max(0, rolling), color: 'bg-amber-500' },
+    { key: 'gravity', label: 'Gravity', value: Math.max(0, gravity), color: 'bg-emerald-500' },
+    { key: 'drivetrain', label: 'Drivetrain', value: Math.max(0, drivetrain), color: 'bg-purple-500' },
+  ]
+
+  const totalResistance = resistances.reduce((sum, r) => sum + r.value, 0)
+
+  // If descending, gravity helps (negative resistance)
+  const gravityHelp = gravity < 0 ? Math.abs(gravity) : 0
+
+  return (
+    <div className="space-y-3">
+      {/* Stacked bar */}
+      <div className="h-6 rounded-full overflow-hidden flex bg-dark-bg border border-dark-border">
+        {resistances.map(r => {
+          const pct = totalResistance > 0 ? (r.value / totalResistance) * 100 : 0
+          if (pct < 1) return null
+          return (
+            <div
+              key={r.key}
+              className={`${r.color} transition-all duration-300`}
+              style={{ width: `${pct}%` }}
+              title={`${r.label}: ${r.value.toFixed(1)}W (${pct.toFixed(1)}%)`}
+            />
+          )
+        })}
+      </div>
+
+      {/* Legend with values */}
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        {resistances.map(r => {
+          const pct = totalResistance > 0 ? (r.value / totalResistance) * 100 : 0
+          return (
+            <div key={r.key} className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className={`w-2.5 h-2.5 rounded-sm ${r.color}`} />
+                <span className="text-gray-400">{r.label}</span>
+              </div>
+              <span className="font-mono text-white">
+                {r.value.toFixed(1)}W <span className="text-gray-500">({pct.toFixed(0)}%)</span>
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Gravity assist note */}
+      {gravityHelp > 0 && (
+        <div className="text-xs text-emerald-400 flex items-center gap-1">
+          <span>↓</span>
+          <span>Gravity assists with {gravityHelp.toFixed(1)}W on this descent</span>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export const EstimatorTab = ({ presetsHook }) => {
   const { user } = useAuth()
@@ -118,6 +210,16 @@ export const EstimatorTab = ({ presetsHook }) => {
     return calculateResult(cda, crr, mass)
   }, [estPwr, estGrade, estDist, cda, crr, mass, rho, eff, mode, routeData, windSpeed, windDirection, routeWindSpeed, routeWindDir, coastSpeed, maxDescentSpeed, minClimbSpeed])
 
+  // Power breakdown (for manual mode)
+  const powerBreakdown = useMemo(() => {
+    if (mode === 'manual' && currentRes && currentRes.vKph > 0) {
+      const velocityMs = currentRes.vKph / 3.6
+      const effectiveWind = getEffectiveWind()
+      return calculatePowerBreakdown(velocityMs, estPwr, estGrade, mass, cda, crr, rho, eff, effectiveWind)
+    }
+    return null
+  }, [mode, currentRes, estPwr, estGrade, mass, cda, crr, rho, eff, windSpeed, windDirection])
+
   const onRouteFile = (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -173,8 +275,21 @@ export const EstimatorTab = ({ presetsHook }) => {
 
   if (!user) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <p className="text-gray-500">Please sign in to use the estimator</p>
+      <div className="flex items-center justify-center h-full p-6">
+        <div className="text-center max-w-md">
+          <div className="w-16 h-16 bg-amber-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <h2 className="text-xl font-bold text-white mb-2">Speed Estimator</h2>
+          <p className="text-gray-400 mb-6">
+            Predict your speed and time based on your aerodynamic values. Create an account to get started.
+          </p>
+          <p className="text-sm text-gray-500">
+            Sign in from the Dashboard to use this feature.
+          </p>
+        </div>
       </div>
     )
   }
@@ -253,7 +368,7 @@ export const EstimatorTab = ({ presetsHook }) => {
                   <label className="text-xs text-gray-500">Air Density (kg/m³)</label>
                   <button
                     onClick={() => setShowRhoCalc(!showRhoCalc)}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300"
+                    className="text-xxs text-indigo-400 hover:text-indigo-300"
                   >
                     {showRhoCalc ? 'Hide' : 'Calculator'}
                   </button>
@@ -269,11 +384,11 @@ export const EstimatorTab = ({ presetsHook }) => {
                 {/* Air Density Calculator */}
                 {showRhoCalc && (
                   <div className="mt-3 p-3 bg-dark-bg rounded border border-dark-border space-y-3">
-                    <p className="text-[10px] text-gray-400 font-medium">Calculate from conditions:</p>
+                    <p className="text-xxs text-gray-400 font-medium">Calculate from conditions:</p>
 
                     {/* Temperature */}
                     <div>
-                      <label className="text-[10px] text-gray-500 mb-1 block">Temperature (°C)</label>
+                      <label className="text-xxs text-gray-500 mb-1 block">Temperature (°C)</label>
                       <input
                         type="number"
                         step="0.1"
@@ -288,13 +403,13 @@ export const EstimatorTab = ({ presetsHook }) => {
                       <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-2">
                         <button
                           onClick={() => setRhoUseElevation(true)}
-                          className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                          className={`px-2 py-1 rounded text-xxs font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
                         >
                           Elevation
                         </button>
                         <button
                           onClick={() => setRhoUseElevation(false)}
-                          className={`px-2 py-1 rounded text-[10px] font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                          className={`px-2 py-1 rounded text-xxs font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
                         >
                           Pressure
                         </button>
@@ -302,7 +417,7 @@ export const EstimatorTab = ({ presetsHook }) => {
 
                       {rhoUseElevation ? (
                         <div>
-                          <label className="text-[10px] text-gray-500 mb-1 block">Elevation (m)</label>
+                          <label className="text-xxs text-gray-500 mb-1 block">Elevation (m)</label>
                           <input
                             type="number"
                             step="1"
@@ -313,7 +428,7 @@ export const EstimatorTab = ({ presetsHook }) => {
                         </div>
                       ) : (
                         <div>
-                          <label className="text-[10px] text-gray-500 mb-1 block">Pressure (hPa)</label>
+                          <label className="text-xxs text-gray-500 mb-1 block">Pressure (hPa)</label>
                           <input
                             type="number"
                             step="0.1"
@@ -327,7 +442,7 @@ export const EstimatorTab = ({ presetsHook }) => {
 
                     {/* Humidity */}
                     <div>
-                      <label className="text-[10px] text-gray-500 mb-1 block">Relative Humidity (%)</label>
+                      <label className="text-xxs text-gray-500 mb-1 block">Relative Humidity (%)</label>
                       <input
                         type="number"
                         step="1"
@@ -342,7 +457,7 @@ export const EstimatorTab = ({ presetsHook }) => {
                     {/* Preview and Apply */}
                     <div className="pt-2 border-t border-dark-border">
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-[10px] text-gray-400">Calculated:</span>
+                        <span className="text-xxs text-gray-400">Calculated:</span>
                         <span className="text-sm font-mono font-bold text-cyan-400">{getCalculatedRho()} kg/m³</span>
                       </div>
                       <button
@@ -530,6 +645,14 @@ export const EstimatorTab = ({ presetsHook }) => {
               </div>
             )}
           </div>
+
+          {/* Power Breakdown (manual mode only) */}
+          {mode === 'manual' && powerBreakdown && (
+            <div className="bg-dark-card p-5 rounded-xl border border-dark-border">
+              <h3 className="text-xs font-bold text-gray-400 uppercase mb-4">Power Breakdown</h3>
+              <PowerBreakdown breakdown={powerBreakdown} power={estPwr} />
+            </div>
+          )}
 
           {/* Sensitivity Table */}
           <div className="bg-dark-card rounded-xl border border-dark-border overflow-hidden">

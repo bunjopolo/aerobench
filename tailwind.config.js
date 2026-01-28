@@ -6,6 +6,9 @@ export default {
   ],
   theme: {
     extend: {
+      fontSize: {
+        'xxs': ['10px', '14px'],
+      },
       colors: {
         dark: {
           bg: '#0f172a',

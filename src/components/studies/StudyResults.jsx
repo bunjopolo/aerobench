@@ -288,7 +288,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-white">{v.name}</span>
                         {isBaseline && (
-                          <span className="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
+                          <span className="text-xxs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">
                             Baseline
                           </span>
                         )}

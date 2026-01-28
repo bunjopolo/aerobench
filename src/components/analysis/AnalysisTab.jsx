@@ -38,6 +38,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
   // Solver
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
+  const [weatherError, setWeatherError] = useState(null)
   const [maxIterations, setMaxIterations] = useState(500)
   const [saved, setSaved] = useState(false)
 
@@ -257,20 +258,29 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
   const getWeather = async () => {
     if (!data || !startTime) return
     setFetchingW(true)
+    setWeatherError(null)
     try {
       const mid = Math.floor(data.lat.length / 2)
       const ds = startTime.toISOString().split('T')[0]
       const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m`
       const r = await fetch(u)
+      if (!r.ok) throw new Error('Weather service unavailable')
       const j = await r.json()
       if (j.hourly) {
         const h = startTime.getUTCHours()
         if (j.hourly.wind_speed_10m[h] !== undefined) {
           setWSpd(parseFloat((j.hourly.wind_speed_10m[h] / 3.6 * 0.6).toFixed(2)))
           setWDir(j.hourly.wind_direction_10m[h])
+        } else {
+          setWeatherError('No data for this time')
         }
+      } else {
+        setWeatherError('No weather data available')
       }
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error(e)
+      setWeatherError('Failed to fetch weather')
+    }
     setFetchingW(false)
   }
 
@@ -318,11 +328,17 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     grid: { rows: 3, columns: 1, pattern: 'independent' },
     showlegend: true,
     legend: { orientation: 'h', y: 1.1, x: 0 },
+    hovermode: 'x',
     xaxis: {
       title: 'Distance (m)',
       gridcolor: '#1e293b',
       anchor: 'y3',
       range: distanceRange,
+      showspikes: true,
+      spikemode: 'across',
+      spikethickness: 1,
+      spikecolor: '#6366f1',
+      spikedash: 'solid',
       rangeslider: {
         visible: true,
         thickness: 0.08,
@@ -347,7 +363,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs text-gray-400">Analyzing</span>
             {hasChanges && (
-              <span className="text-[10px] text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded">Modified</span>
+              <span className="text-xxs text-amber-400 bg-amber-900/30 px-2 py-0.5 rounded">Modified</span>
             )}
           </div>
           <h3 className="font-bold text-white">{selectedSetup?.name}</h3>
@@ -380,7 +396,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
               <h3 className="label-sm mb-3">Solver</h3>
 
               <div className="mb-3">
-                <label className="text-[10px] text-gray-500 mb-1 block">Max Iterations</label>
+                <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
                 <div className="flex gap-2">
                   <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark flex-1" />
                   <button onClick={() => setMaxIterations(500)} className="px-2 text-xs text-gray-400 hover:text-white border border-dark-border rounded hover:bg-dark-input transition-colors" title="Reset to default (500)">↺</button>
@@ -437,13 +453,16 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
                   {fetchingW ? '...' : 'Fetch Wind'}
                 </button>
               </div>
+              {weatherError && (
+                <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
+              )}
               <div className="grid grid-cols-2 gap-3 mb-2">
                 <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block">Wind (m/s)</label>
+                  <label className="text-xxs text-gray-500 mb-1 block">Wind (m/s)</label>
                   <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
                 </div>
                 <div>
-                  <label className="text-[10px] text-gray-500 mb-1 block">Direction</label>
+                  <label className="text-xxs text-gray-500 mb-1 block">Direction</label>
                   <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
                 </div>
               </div>
@@ -501,7 +520,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
               <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
               <button
                 onClick={() => setRange([0, 100])}
-                className="text-[10px] text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
+                className="text-xxs text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
                 title="Reset to full range"
               >
                 Reset
@@ -536,8 +555,10 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
           {data ? (
             sim && sim.emptyRange ? (
               <div className="flex flex-col items-center justify-center h-full text-yellow-500 space-y-4">
-                <div className="text-5xl">⚠️</div>
-                <p className="text-lg">Range too narrow</p>
+                <svg className="w-16 h-16 mx-auto text-yellow-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <p className="text-lg mt-4">Range too narrow</p>
                 <p className="text-sm text-gray-500">Adjust the crop sliders</p>
               </div>
             ) : (
@@ -563,8 +584,10 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
             )
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-600 space-y-4">
-              <div className="text-6xl opacity-20">📊</div>
-              <p>Upload a GPX file to begin analysis</p>
+              <svg className="w-16 h-16 mx-auto text-gray-600 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+              <p className="mt-4">Upload a GPX file to begin analysis</p>
             </div>
           )}
         </div>
