@@ -167,7 +167,9 @@ export const QuickTestTab = ({ presetsHook }) => {
     setSweepResolution(70)
   }
 
-  // Simulation calculation - compute full virtual elevation for display
+  // Simulation calculation - compute virtual elevation
+  // For the SELECTED RANGE: starts fresh at ele[sIdx] (treats as standalone segment)
+  // For display continuity: also computes values outside range starting from ele[0]
   const sim = useMemo(() => {
     if (!data) return null
     const { pwr, v, a, ds, ele, b } = data
@@ -178,21 +180,11 @@ export const QuickTestTab = ({ presetsHook }) => {
       return { vEle: [], err: [], sIdx, eIdx, rmse: 0, anomalies: [], emptyRange: true }
     }
 
-    // Compute virtual elevation for FULL dataset (for rangeslider display)
-    const vEle = new Array(pwr.length).fill(0)
-    const err = new Array(pwr.length).fill(0)
-
-    // For Shen method: start at 0 (flat ground assumption)
-    // For other methods: start at GPS elevation
-    const startElev = method === 'shen' ? 0 : ele[0]
-    vEle[0] = startElev
-    let cur = startElev
-
     const iOff = Math.round(offset)
     const wRad = wDir * (Math.PI / 180)
 
-    // Calculate full virtual elevation
-    for (let i = 0; i < pwr.length; i++) {
+    // Helper to compute virtual elevation step
+    const computeStep = (i, prevVEle) => {
       const vg = Math.max(0.1, v[i])
       let pi = i - iOff
       if (pi < 0) pi = 0
@@ -207,17 +199,50 @@ export const QuickTestTab = ({ presetsHook }) => {
       const fr = mass * GRAVITY * crr
       const fac = mass * a[i]
 
-      if (i > 0) {
-        cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+      return prevVEle + ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
+    }
+
+    const vEle = new Array(pwr.length)
+    const err = new Array(pwr.length)
+
+    // For selected range: start fresh at ele[sIdx]
+    // This is what RMSE and solver use
+    const rangeStartElev = method === 'shen' ? 0 : ele[sIdx]
+    let rangeCur = rangeStartElev
+    vEle[sIdx] = rangeCur
+    err[sIdx] = method === 'shen' ? rangeCur : 0  // Anchored at start
+
+    for (let i = sIdx + 1; i < eIdx; i++) {
+      rangeCur = computeStep(i, rangeCur)
+      vEle[i] = rangeCur
+      err[i] = method === 'shen' ? rangeCur : rangeCur - ele[i]
+    }
+
+    // For context outside range: compute from ele[0] (for rangeslider display only)
+    // Before selected range
+    if (sIdx > 0) {
+      const contextStartElev = method === 'shen' ? 0 : ele[0]
+      let contextCur = contextStartElev
+      vEle[0] = contextCur
+      err[0] = method === 'shen' ? contextCur : contextCur - ele[0]
+      for (let i = 1; i < sIdx; i++) {
+        contextCur = computeStep(i, contextCur)
+        vEle[i] = contextCur
+        err[i] = method === 'shen' ? contextCur : contextCur - ele[i]
       }
-      vEle[i] = cur
-      // For Shen: error is deviation from flat (0), for others: deviation from GPS
-      err[i] = method === 'shen' ? cur : cur - ele[i]
+    }
+
+    // After selected range
+    if (eIdx < pwr.length) {
+      let contextCur = vEle[eIdx - 1]  // Continue from end of selected range
+      for (let i = eIdx; i < pwr.length; i++) {
+        contextCur = computeStep(i, contextCur)
+        vEle[i] = contextCur
+        err[i] = method === 'shen' ? contextCur : contextCur - ele[i]
+      }
     }
 
     // Calculate RMSE and R² for the selected range ONLY
-    // Use a fresh virtual elevation starting at ele[sIdx] - treats cropped region as standalone
-    let rangeVEle = ele[sIdx]  // Start fresh at GPS elevation of range start
     let sqSum = 0, cnt = 0, ssTot = 0
     let eleSum = 0
     for (let i = sIdx; i < eIdx; i++) {
@@ -226,27 +251,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     const eleMean = eleSum / (eIdx - sIdx)
 
     for (let i = sIdx; i < eIdx; i++) {
-      // Compute virtual elevation for this point (fresh start at sIdx)
-      if (i > sIdx) {
-        const vg = Math.max(0.1, v[i])
-        let pi = i - iOff
-        if (pi < 0) pi = 0
-        if (pi >= pwr.length) pi = pwr.length - 1
-
-        const pw = pwr[pi] * eff
-        const rh = rho * Math.exp(-ele[i] / 9000)
-        const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
-
-        const fa = 0.5 * rh * cda * va * va * Math.sign(va)
-        const ft = pw / vg
-        const fr = mass * GRAVITY * crr
-        const fac = mass * a[i]
-
-        rangeVEle += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
-      }
-
-      // Error for this point (Shen: deviation from start, others: deviation from GPS)
-      const errVal = method === 'shen' ? (rangeVEle - ele[sIdx]) : (rangeVEle - ele[i])
+      const errVal = err[i]
       sqSum += errVal * errVal
       ssTot += (ele[i] - eleMean) ** 2
       cnt++
@@ -255,7 +260,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     const rmse = cnt > 0 ? Math.sqrt(sqSum / cnt) : 0
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
 
-    // Calculate net elevation for Shen method (using range values)
+    // Calculate net elevation for Shen method
     const netElev = vEle[eIdx - 1] - vEle[sIdx]
 
     return { vEle, err, sIdx, eIdx, rmse, r2, netElev }
