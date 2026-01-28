@@ -1070,7 +1070,7 @@ export const QuickTestTab = ({ presetsHook }) => {
             </div>
 
             {/* Fit Quality Metrics */}
-            {method === 'chung' && sim && sim.r2 > 0 && (
+            {method === 'chung' && sim && !sim.emptyRange && (
               <div className="grid grid-cols-2 gap-2 text-xs mb-3 p-2 bg-dark-bg rounded border border-dark-border">
                 <div className="flex justify-between">
                   <span className="text-gray-500">RMSE</span>
@@ -1078,7 +1078,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">R²</span>
-                  <span className={`font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>{sim.r2.toFixed(4)}</span>
+                  <span className={`font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>{(sim.r2 || 0).toFixed(4)}</span>
                 </div>
               </div>
             )}
@@ -1112,7 +1112,7 @@ export const QuickTestTab = ({ presetsHook }) => {
             )}
 
             {/* Save Button */}
-            {((method === 'chung' && sim && sim.r2 > 0) || (method === 'climb' && climbResult) || (method === 'shen' && shenResult) || (method === 'sweep' && sweepResults)) && (
+            {((method === 'chung' && sim && !sim.emptyRange) || (method === 'climb' && climbResult) || (method === 'shen' && shenResult) || (method === 'sweep' && sweepResults)) && (
               <button
                 onClick={() => setShowSavePreset(true)}
                 className="w-full py-2 text-xs font-medium text-gray-300 hover:text-white border border-dark-border hover:border-brand-primary/50 rounded transition-all hover:bg-brand-primary/10 flex items-center justify-center gap-2"
