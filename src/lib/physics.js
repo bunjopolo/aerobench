@@ -250,11 +250,13 @@ export const solveCdaCrr = (
   const avgSpeedKph = avgSpeed * 3.6
 
   // Calculate virtual elevation profile for given CdA/Crr
+  // Uses same convention as display: vEle[0] = ele[si], then accumulate deltas
   const calcVirtualElevation = (tc, tr) => {
     const vEle = []
     let cur = ele[si]
+    vEle.push(cur)  // vEle[0] = ele[si], no delta yet
 
-    for (let i = si; i < ei; i++) {
+    for (let i = si + 1; i < ei; i++) {
       const vg = Math.max(0.1, v[i])
       let pi = i - io
       if (pi < 0) pi = 0
@@ -442,13 +444,15 @@ export const solveCdaCrrClimb = (
   const n2 = ei2 - si2
 
   // Calculate virtual elevation for a given file
+  // Uses same convention as display: vEle[0] = ele[si], then accumulate deltas
   const calcVE = (tc, tr, data, si, ei, offset) => {
     const { pwr, v, a, ds, ele, b } = data
     const io = Math.round(offset)
     const vEle = []
     let cur = ele[si]
+    vEle.push(cur)  // vEle[0] = ele[si], no delta yet
 
-    for (let i = si; i < ei; i++) {
+    for (let i = si + 1; i < ei; i++) {
       const vg = Math.max(0.1, v[i])
       let pi = i - io
       if (pi < 0) pi = 0
@@ -602,8 +606,9 @@ export const solveCdaCrrShenDual = (
     const io = Math.round(offset)
     const vEle = []
     let cur = 0  // Start at 0 (flat ground reference)
+    vEle.push(cur)  // vEle[0] = 0, no delta yet
 
-    for (let i = si; i < ei; i++) {
+    for (let i = si + 1; i < ei; i++) {
       const vg = Math.max(0.1, v[i])
       let pi = i - io
       if (pi < 0) pi = 0
@@ -732,6 +737,7 @@ export const solveCdaCrrShenDual = (
 // ============================================================================
 
 // Compute RMSE for a given CdA/Crr combination (optimized for batch calls)
+// Uses same convention as display: compare vEle[i] to ele[i]
 const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir) => {
   const { pwr, v, a, ds, ele, b } = data
   const io = Math.round(offset)
@@ -741,7 +747,10 @@ const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir)
   let cur = ele[si]
   let sqErr = 0
 
-  for (let i = si; i < ei; i++) {
+  // First point: vEle[si] = ele[si], error = 0
+  // (implicitly, since cur = ele[si] initially)
+
+  for (let i = si + 1; i < ei; i++) {
     const vg = Math.max(0.1, v[i])
     let pi = i - io
     if (pi < 0) pi = 0
