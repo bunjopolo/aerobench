@@ -460,22 +460,19 @@ export const QuickTestTab = ({ presetsHook }) => {
   }
 
   // Calculate distance ranges from percentage ranges
+  // IMPORTANT: Use actual distances at the index boundaries to match vEle computation
   const distanceRange = useMemo(() => {
     if (!data) return [0, 0]
-    const maxDist = data.dist[data.dist.length - 1]
-    return [
-      (range[0] / 100) * maxDist,
-      (range[1] / 100) * maxDist
-    ]
+    const sIdx = Math.floor((range[0] / 100) * data.dist.length)
+    const eIdx = Math.min(Math.floor((range[1] / 100) * data.dist.length), data.dist.length - 1)
+    return [data.dist[sIdx] || 0, data.dist[eIdx] || 0]
   }, [data, range])
 
   const distanceRange2 = useMemo(() => {
     if (!data2) return [0, 0]
-    const maxDist = data2.dist[data2.dist.length - 1]
-    return [
-      (range2[0] / 100) * maxDist,
-      (range2[1] / 100) * maxDist
-    ]
+    const sIdx = Math.floor((range2[0] / 100) * data2.dist.length)
+    const eIdx = Math.min(Math.floor((range2[1] / 100) * data2.dist.length), data2.dist.length - 1)
+    return [data2.dist[sIdx] || 0, data2.dist[eIdx] || 0]
   }, [data2, range2])
 
   // Handle rangeslider changes for file 1
