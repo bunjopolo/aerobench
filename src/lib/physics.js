@@ -715,6 +715,153 @@ export const solveCdaCrrShenDual = (
   }
 }
 
+// ============================================================================
+// SWEEP METHOD (2D CdA/Crr Solution Space)
+// ============================================================================
+// With single-ride Chung analysis, CdA and Crr are often degenerate:
+// Higher CdA + Lower Crr ≈ Lower CdA + Higher Crr (similar RMSE)
+//
+// This sweep method visualizes the FULL 2D solution space by:
+// 1. Sweeping both CdA and Crr across their ranges
+// 2. Computing RMSE for each (CdA, Crr) combination
+// 3. Displaying as a heatmap to show the "valley" of good solutions
+//
+// Users can then apply prior knowledge (e.g., "I know my Crr is ~0.004")
+// to narrow down the CdA value by looking at where that Crr intersects
+// the low-RMSE region.
+// ============================================================================
+
+// Compute RMSE for a given CdA/Crr combination (optimized for batch calls)
+const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir) => {
+  const { pwr, v, a, ds, ele, b } = data
+  const io = Math.round(offset)
+  const wr = wDir * (Math.PI / 180)
+  const n = ei - si
+
+  let cur = ele[si]
+  let sqErr = 0
+
+  for (let i = si; i < ei; i++) {
+    const vg = Math.max(0.1, v[i])
+    let pi = i - io
+    if (pi < 0) pi = 0
+    if (pi >= pwr.length) pi = pwr.length - 1
+    const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wr)
+    const localRho = rho * Math.exp(-ele[i] / 9000)
+    const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * crr) - (mass * a[i]) - (0.5 * localRho * cda * va * va * Math.sign(va))
+    cur += (f / (mass * GRAVITY)) * ds[i]
+    sqErr += Math.pow(cur - ele[i], 2)
+  }
+
+  return Math.sqrt(sqErr / n)
+}
+
+// Main sweep solver - generates 2D CdA/Crr solution space
+// Returns a Promise to allow progress updates during computation
+export const solveCdaCrrSweep = (
+  data, si, ei, mass, eff, rho, offset, wSpd, wDir,
+  options = {}
+) => {
+  const {
+    cdaMin = 0.10,
+    cdaMax = 0.60,
+    cdaSteps = 70,
+    crrMin = 0.001,
+    crrMax = 0.020,
+    crrSteps = 70,
+    onProgress = null  // Progress callback: (percent, currentRow, totalRows) => void
+  } = options
+
+  return new Promise((resolve) => {
+    // Create grid of CdA and Crr values
+    const cdaValues = []
+    const crrValues = []
+
+    for (let i = 0; i <= cdaSteps; i++) {
+      cdaValues.push(cdaMin + (i / cdaSteps) * (cdaMax - cdaMin))
+    }
+    for (let j = 0; j <= crrSteps; j++) {
+      crrValues.push(crrMin + (j / crrSteps) * (crrMax - crrMin))
+    }
+
+    // Compute RMSE for each (CdA, Crr) combination
+    const rmseGrid = []
+    let bestSolution = null
+    let bestRmse = Infinity
+    let minRmse = Infinity
+    let maxRmse = 0
+
+    let currentRow = 0
+    const totalRows = cdaSteps + 1
+
+    // Process rows in chunks to allow UI updates
+    const processChunk = () => {
+      const chunkSize = 5  // Process 5 rows per frame
+      const endRow = Math.min(currentRow + chunkSize, totalRows)
+
+      for (let i = currentRow; i < endRow; i++) {
+        const row = []
+        for (let j = 0; j <= crrSteps; j++) {
+          const rmse = computeRMSE(data, si, ei, cdaValues[i], crrValues[j], mass, eff, rho, offset, wSpd, wDir)
+          row.push(rmse)
+
+          minRmse = Math.min(minRmse, rmse)
+          maxRmse = Math.max(maxRmse, rmse)
+
+          if (rmse < bestRmse) {
+            bestRmse = rmse
+            bestSolution = { cda: cdaValues[i], crr: crrValues[j], rmse }
+          }
+        }
+        rmseGrid.push(row)
+      }
+
+      currentRow = endRow
+
+      // Report progress
+      if (onProgress) {
+        const percent = Math.round((currentRow / totalRows) * 100)
+        onProgress(percent, currentRow, totalRows)
+      }
+
+      if (currentRow < totalRows) {
+        // Continue processing after allowing UI to update
+        setTimeout(processChunk, 0)
+      } else {
+        // Done - compute R² for best solution and resolve
+        if (bestSolution) {
+          const n = ei - si
+          let eleSum = 0
+          for (let i = si; i < ei; i++) eleSum += data.ele[i]
+          const eleMean = eleSum / n
+
+          let ssTot = 0
+          for (let i = si; i < ei; i++) {
+            ssTot += Math.pow(data.ele[i] - eleMean, 2)
+          }
+
+          const ssRes = bestRmse * bestRmse * n
+          bestSolution.r2 = ssTot > 0 ? 1 - (ssRes / ssTot) : 0
+        }
+
+        resolve({
+          cdaValues,
+          crrValues,
+          rmseGrid,
+          best: bestSolution,
+          minRmse,
+          maxRmse,
+          cdaRange: [cdaMin, cdaMax],
+          crrRange: [crrMin, crrMax]
+        })
+      }
+    }
+
+    // Start processing
+    processChunk()
+  })
+}
+
 // Check if ride has steady acceleration (suitable for Shen method)
 export const checkSteadyAcceleration = (data, si, ei) => {
   const { v } = data
