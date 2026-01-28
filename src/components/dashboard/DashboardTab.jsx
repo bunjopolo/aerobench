@@ -21,7 +21,7 @@ export const DashboardTab = ({ onStudyClick }) => {
             Measure Your Aerodynamics
           </h1>
           <p className="text-xl text-gray-400 max-w-2xl mx-auto mb-8">
-            AeroBench uses virtual elevation analysis to calculate your CdA and Crr from regular training rides. No wind tunnel required.
+            AeroBench uses virtual elevation analysis to calculate your CdA and Crr from power meter and speed data. No wind tunnel required.
           </p>
 
           {/* Sign In Buttons */}
@@ -63,7 +63,7 @@ export const DashboardTab = ({ onStudyClick }) => {
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Compare Equipment</h3>
             <p className="text-sm text-gray-400">
-              Test different positions, tires, and equipment to find measurable aero gains.
+              Perform studies to average multiple runs, or compare different setups.
             </p>
           </div>
 
@@ -73,9 +73,9 @@ export const DashboardTab = ({ onStudyClick }) => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
               </svg>
             </div>
-            <h3 className="text-lg font-semibold text-white mb-2">Speed Estimator</h3>
+            <h3 className="text-lg font-semibold text-white mb-2">Segment Estimator</h3>
             <p className="text-sm text-gray-400">
-              Predict race times and speeds using your measured aerodynamic values.
+              Predict race times and speeds on gpx courses using your measured aerodynamic and rolling resistance values.
             </p>
           </div>
         </div>
@@ -87,7 +87,7 @@ export const DashboardTab = ({ onStudyClick }) => {
             <div className="text-center">
               <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white font-bold mx-auto mb-3">1</div>
               <h4 className="font-medium text-white mb-2">Record Your Ride</h4>
-              <p className="text-sm text-gray-500">Do a steady-effort ride on a flat or rolling course with your power meter.</p>
+              <p className="text-sm text-gray-500">Do a ride on a closed loop course with your power meter and speed sensor.</p>
             </div>
             <div className="text-center">
               <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white font-bold mx-auto mb-3">2</div>
@@ -97,7 +97,7 @@ export const DashboardTab = ({ onStudyClick }) => {
             <div className="text-center">
               <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white font-bold mx-auto mb-3">3</div>
               <h4 className="font-medium text-white mb-2">Get Your Results</h4>
-              <p className="text-sm text-gray-500">See your CdA and Crr values, compare setups, and track improvements.</p>
+              <p className="text-sm text-gray-500">Calculate your CdA and Crr values, compare setups, and track improvements.</p>
             </div>
           </div>
         </div>
