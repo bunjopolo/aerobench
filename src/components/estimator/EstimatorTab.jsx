@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useAuth } from '../../hooks/useAuth.jsx'
-import { parseRouteGPX } from '../../lib/gpxParser'
+import { parseRouteGPX } from '../../lib/activityFileParser'
 import { solveVelocity, simulateRoute, safeNum, GRAVITY } from '../../lib/physics'
 import { calculateAirDensity } from '../../lib/airDensity'
 import { PresetSelector } from '../presets'

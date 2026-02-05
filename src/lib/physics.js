@@ -252,19 +252,22 @@ export const solveCdaCrr = (
   // Calculate virtual elevation profile for given CdA/Crr
   // ONLY uses data within selected range [si, ei) - treats it as standalone segment
   // Starts fresh at ele[si] so cropped region is analyzed independently
+  // Uses physics values from START of each segment (i-1) for proper alignment
   const calcVirtualElevation = (tc, tr) => {
     const vEle = []
     let cur = ele[si]  // Start at GPS elevation of range start
     vEle.push(cur)
 
     for (let i = si + 1; i < ei; i++) {
-      const vg = Math.max(0.1, v[i])
-      let pi = i - io
-      if (pi < 0) pi = 0
-      if (pi >= pwr.length) pi = pwr.length - 1
-      const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wr)
-      const localRho = rho * Math.exp(-ele[i] / 9000)
-      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[i]) - (0.5 * localRho * tc * va * va * Math.sign(va))
+      // Use physics values from start of segment (i-1) since ds[i] spans from i-1 to i
+      const segStart = i - 1
+      const vg = Math.max(0.1, v[segStart])
+      let pi = segStart - io
+      if (pi < si) pi = si        // Clamp to crop start
+      if (pi >= ei) pi = ei - 1   // Clamp to crop end
+      const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
+      const localRho = rho * Math.exp(-ele[segStart] / 9000)
+      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[segStart]) - (0.5 * localRho * tc * va * va * Math.sign(va))
       cur += (f / (mass * GRAVITY)) * ds[i]
       vEle.push(cur)
     }
@@ -370,31 +373,6 @@ export const solveCdaCrr = (
   }
 }
 
-// Calculate virtual elevation profile for given CdA/Crr
-export const calculateVirtualElevation = (
-  data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir
-) => {
-  const { pwr, v, a, ds, ele, b } = data
-  const io = Math.round(offset)
-  const wr = wDir * (Math.PI / 180)
-
-  const vEle = []
-  let cur = ele[si]
-
-  for (let i = si; i < ei; i++) {
-    const vg = Math.max(0.1, v[i])
-    let pi = i - io
-    if (pi < 0) pi = 0
-    if (pi >= pwr.length) pi = pwr.length - 1
-    const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wr)
-    const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * crr) - (mass * a[i]) - (0.5 * (rho * Math.exp(-ele[i] / 9000)) * cda * va * va * Math.sign(va))
-    cur += (f / (mass * GRAVITY)) * ds[i]
-    vEle.push(cur)
-  }
-
-  return vEle
-}
-
 // Calculate bow (curvature) of virtual elevation plot for Shen method
 // On an accelerating ride (low speeds left, high speeds right):
 //   - Positive bow (middle above line) = Crr too LOW
@@ -448,6 +426,7 @@ export const solveCdaCrrClimb = (
 
   // Calculate virtual elevation for a given file
   // Uses same convention as display: vEle[0] = ele[si], then accumulate deltas
+  // Uses physics values from START of each segment (i-1) for proper alignment
   const calcVE = (tc, tr, data, si, ei, offset) => {
     const { pwr, v, a, ds, ele, b } = data
     const io = Math.round(offset)
@@ -456,13 +435,15 @@ export const solveCdaCrrClimb = (
     vEle.push(cur)  // vEle[0] = ele[si], no delta yet
 
     for (let i = si + 1; i < ei; i++) {
-      const vg = Math.max(0.1, v[i])
-      let pi = i - io
-      if (pi < 0) pi = 0
-      if (pi >= pwr.length) pi = pwr.length - 1
-      const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wr)
-      const localRho = rho * Math.exp(-ele[i] / 9000)
-      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[i]) - (0.5 * localRho * tc * va * va * Math.sign(va))
+      // Use physics values from start of segment (i-1) since ds[i] spans from i-1 to i
+      const segStart = i - 1
+      const vg = Math.max(0.1, v[segStart])
+      let pi = segStart - io
+      if (pi < si) pi = si        // Clamp to crop start
+      if (pi >= ei) pi = ei - 1   // Clamp to crop end
+      const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
+      const localRho = rho * Math.exp(-ele[segStart] / 9000)
+      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[segStart]) - (0.5 * localRho * tc * va * va * Math.sign(va))
       cur += (f / (mass * GRAVITY)) * ds[i]
       vEle.push(cur)
     }
@@ -604,6 +585,7 @@ export const solveCdaCrrShenDual = (
 
   // Calculate virtual elevation for a given file
   // Starts at 0 (arbitrary reference since ground is assumed flat)
+  // Uses physics values from START of each segment (i-1) for proper alignment
   const calcVE = (tc, tr, data, si, ei, offset) => {
     const { pwr, v, a, ds, ele, b } = data
     const io = Math.round(offset)
@@ -612,13 +594,15 @@ export const solveCdaCrrShenDual = (
     vEle.push(cur)  // vEle[0] = 0, no delta yet
 
     for (let i = si + 1; i < ei; i++) {
-      const vg = Math.max(0.1, v[i])
-      let pi = i - io
-      if (pi < 0) pi = 0
-      if (pi >= pwr.length) pi = pwr.length - 1
-      const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wr)
-      const localRho = rho * Math.exp(-ele[i] / 9000)
-      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[i]) - (0.5 * localRho * tc * va * va * Math.sign(va))
+      // Use physics values from start of segment (i-1) since ds[i] spans from i-1 to i
+      const segStart = i - 1
+      const vg = Math.max(0.1, v[segStart])
+      let pi = segStart - io
+      if (pi < si) pi = si        // Clamp to crop start
+      if (pi >= ei) pi = ei - 1   // Clamp to crop end
+      const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
+      const localRho = rho * Math.exp(-ele[segStart] / 9000)
+      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[segStart]) - (0.5 * localRho * tc * va * va * Math.sign(va))
       cur += (f / (mass * GRAVITY)) * ds[i]
       vEle.push(cur)
     }
@@ -752,14 +736,16 @@ const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir)
   let sqErr = 0
 
   // First point: vEle = ele[si], error = 0
+  // Uses physics values from START of each segment (i-1) for proper alignment
   for (let i = si + 1; i < ei; i++) {
-    const vg = Math.max(0.1, v[i])
-    let pi = i - io
-    if (pi < 0) pi = 0
-    if (pi >= pwr.length) pi = pwr.length - 1
-    const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wr)
-    const localRho = rho * Math.exp(-ele[i] / 9000)
-    const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * crr) - (mass * a[i]) - (0.5 * localRho * cda * va * va * Math.sign(va))
+    const segStart = i - 1
+    const vg = Math.max(0.1, v[segStart])
+    let pi = segStart - io
+    if (pi < si) pi = si        // Clamp to crop start
+    if (pi >= ei) pi = ei - 1   // Clamp to crop end
+    const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
+    const localRho = rho * Math.exp(-ele[segStart] / 9000)
+    const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * crr) - (mass * a[segStart]) - (0.5 * localRho * cda * va * va * Math.sign(va))
     cur += (f / (mass * GRAVITY)) * ds[i]
     sqErr += Math.pow(cur - ele[i], 2)
   }
