@@ -34,6 +34,74 @@ const AppContent = () => {
     setActiveTab('studies')
   }
 
+  const navItems = [
+    {
+      id: 'dashboard',
+      label: 'Dashboard',
+      iconPath: 'M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z'
+    },
+    {
+      id: 'quicktest',
+      label: 'Quick Test',
+      iconPath: 'M13 10V3L4 14h7v7l9-11h-7z'
+    },
+    {
+      id: 'studies',
+      label: 'Studies',
+      iconPath: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2'
+    },
+    {
+      id: 'estimator',
+      label: 'Estimator',
+      iconPath: 'M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z'
+    },
+    {
+      id: 'guide',
+      label: 'Guide',
+      iconPath: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253'
+    },
+    {
+      id: 'validation',
+      label: 'Validation',
+      iconPath: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'
+    },
+    {
+      id: 'help',
+      label: 'Help',
+      iconPath: 'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z'
+    },
+    ...(isAdmin ? [{
+      id: 'admin',
+      label: 'Admin',
+      admin: true,
+      iconPath: 'M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z'
+    }] : [])
+  ]
+
+  const renderNavButton = (item, mobile = false) => {
+    const isActive = activeTab === item.id
+    const activeClass = item.admin
+      ? 'bg-red-500/20 text-red-300 border border-red-500/40'
+      : 'bg-brand-primary/20 text-white border border-brand-primary/30'
+    const inactiveClass = item.admin
+      ? 'text-red-400/70 hover:text-red-300 hover:bg-red-500/10'
+      : 'text-gray-300 hover:text-white hover:bg-dark-card'
+    const spacingClass = mobile ? 'px-3 py-2 text-xs' : 'px-4 py-3 text-sm'
+
+    return (
+      <button
+        key={item.id}
+        className={`text-left rounded-lg transition-all flex items-center gap-2.5 ${spacingClass} ${isActive ? activeClass : inactiveClass} ${mobile ? 'shrink-0' : 'w-full'}`}
+        onClick={() => setActiveTab(item.id)}
+      >
+        <svg className={mobile ? 'w-4 h-4' : 'w-5 h-5'} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={item.iconPath} />
+        </svg>
+        {item.label}
+      </button>
+    )
+  }
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-dark-bg">
@@ -56,7 +124,7 @@ const AppContent = () => {
   return (
     <div className="flex h-screen overflow-hidden text-sm">
       {/* SIDEBAR */}
-      <div className="w-64 flex-shrink-0 bg-dark-bg border-r border-dark-border flex flex-col z-20 shadow-xl">
+      <div className="hidden md:flex w-64 flex-shrink-0 bg-dark-bg border-r border-dark-border flex-col z-20 shadow-xl">
         {/* Header */}
         <div className="p-4 border-b border-dark-border">
           <div className="flex items-center justify-between">
@@ -70,116 +138,7 @@ const AppContent = () => {
 
         {/* Navigation */}
         <nav className="flex-1 p-4">
-          <div className="space-y-1">
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'dashboard'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('dashboard')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
-              </svg>
-              Dashboard
-            </button>
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'quicktest'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('quicktest')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              Quick Test
-            </button>
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'studies'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('studies')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-              </svg>
-              Studies
-            </button>
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'estimator'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('estimator')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-              </svg>
-              Estimator
-            </button>
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'guide'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('guide')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-              </svg>
-              Guide
-            </button>
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'validation'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('validation')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Validation
-            </button>
-            <button
-              className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 ${
-                activeTab === 'help'
-                  ? 'bg-brand-primary/20 text-white border border-brand-primary/30'
-                  : 'text-gray-400 hover:text-white hover:bg-dark-card'
-              }`}
-              onClick={() => setActiveTab('help')}
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              Help
-            </button>
-
-            {/* Admin tab - only visible to admin */}
-            {isAdmin && (
-              <button
-                className={`w-full text-left px-4 py-3 rounded-lg transition-all flex items-center gap-3 mt-4 ${
-                  activeTab === 'admin'
-                    ? 'bg-red-500/20 text-red-400 border border-red-500/30'
-                    : 'text-red-400/60 hover:text-red-400 hover:bg-red-500/10'
-                }`}
-                onClick={() => setActiveTab('admin')}
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-                Admin
-              </button>
-            )}
-          </div>
+          <div className="space-y-1">{navItems.map(item => renderNavButton(item, false))}</div>
         </nav>
 
         {/* Help section */}
@@ -247,6 +206,31 @@ const AppContent = () => {
 
       {/* MAIN CONTENT */}
       <div className="flex-1 flex flex-col min-w-0 bg-dark-bg">
+        {/* Mobile header + nav */}
+        <div className="md:hidden border-b border-dark-border bg-dark-bg/95 backdrop-blur">
+          <div className="px-3 py-3 flex items-center justify-between">
+            <div>
+              <h1 className="text-base font-bold text-white">AeroBench</h1>
+              <p className="text-xxs text-gray-400">Virtual Elevation Analysis</p>
+            </div>
+            {isAuthenticated ? <UserMenu /> : null}
+          </div>
+          <nav className="px-2 pb-2 overflow-x-auto">
+            <div className="flex items-center gap-1 min-w-max">
+              {navItems.map(item => renderNavButton(item, true))}
+            </div>
+          </nav>
+          <div className="px-3 pb-2 flex items-center gap-3 text-xxs text-gray-400">
+            {isAuthenticated ? (
+              <button onClick={() => setShowContact(true)} className="hover:text-white transition-colors">
+                Contact
+              </button>
+            ) : null}
+            <button onClick={() => setLegalPage('privacy')} className="hover:text-white transition-colors">Privacy</button>
+            <button onClick={() => setLegalPage('terms')} className="hover:text-white transition-colors">Terms</button>
+          </div>
+        </div>
+
         {/* Content Area */}
         <div className="flex-1 relative overflow-auto">
           {activeTab === 'dashboard' && <DashboardTab onStudyClick={handleStudyClick} />}

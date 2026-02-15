@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
-import { parseActivityFile } from '../../lib/activityFileParser'
+import { parseActivityFile } from '../../lib/gpxParser'
 import { solveCdaCrr, safeNum, GRAVITY } from '../../lib/physics'
 import { lowPassFilter } from '../../lib/preprocessing'
 import { useRuns } from '../../hooks/useRuns'
@@ -9,7 +9,7 @@ import { calculateAirDensity } from '../../lib/airDensity'
 import { ConfirmDialog, AlertDialog } from '../ui'
 
 export const RunAnalysis = ({ variation, study, onBack }) => {
-  const { runs, stats, createRun, toggleValid, deleteRun, refresh } = useRuns(variation.id)
+  const { runs, stats, createRun, toggleValid, deleteRun } = useRuns(variation.id)
   const variableType = getVariableType(study.variable_type)
 
   // Get physics from base setup or defaults
@@ -47,18 +47,38 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [cdaNudge, setCdaNudge] = useState(0.001)
   const [crrNudge, setCrrNudge] = useState(0.0001)
 
+  // Solver bounds - user configurable to prevent railing
+  const [cdaMin, setCdaMin] = useState(0.15)
+  const [cdaMax, setCdaMax] = useState(0.50)
+  const [crrMin, setCrrMin] = useState(0.002)
+  const [crrMax, setCrrMax] = useState(0.012)
+
+  // Railing detection
+  const [isRailing, setIsRailing] = useState(false)
+  const [railingDetails, setRailingDetails] = useState(null)
+
+  // Clamp CdA when bounds change
+  useEffect(() => {
+    if (cda < cdaMin) setCda(cdaMin)
+    if (cda > cdaMax) setCda(cdaMax)
+  }, [cda, cdaMin, cdaMax])
+
+  // Clamp Crr when bounds change
+  useEffect(() => {
+    if (crr < crrMin) setCrr(crrMin)
+    if (crr > crrMax) setCrr(crrMax)
+  }, [crr, crrMin, crrMax])
+
   const [data, setData] = useState(null)
   const [startTime, setStartTime] = useState(null)
   const [fileName, setFileName] = useState(null)
+  const [hasPowerData, setHasPowerData] = useState(true)
   const [lapMarkers, setLapMarkers] = useState([])
-
-  // Smart recording warning
-  const [smartRecordingWarning, setSmartRecordingWarning] = useState(null)
 
   // Environment
   const [wSpd, setWSpd] = useState(0)
   const [wDir, setWDir] = useState(0)
-  const [offset, setOffset] = useState(0)
+  const offset = 0
   const [range, setRange] = useState([0, 100])
 
   // Solver
@@ -75,18 +95,16 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [filterGps, setFilterGps] = useState(false)
   const [filterVirtual, setFilterVirtual] = useState(false)
   const [filterIntensity, setFilterIntensity] = useState(5)
-
-  // Y-axis autoscale (scale to visible range)
+  // View controls
   const [autoScaleY, setAutoScaleY] = useState(false)
-
-  // Lap markers visibility
-  const [showLaps, setShowLaps] = useState(true)
+  const [showRefLines, setShowRefLines] = useState(false)
+  const [showLapLines, setShowLapLines] = useState(true)
 
   // Dialog state
   const [deleteDialog, setDeleteDialog] = useState({ open: false, runId: null, runName: '' })
   const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
 
-  // File Handler
+  // File Handler (supports GPX and FIT)
   const onFile = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -96,16 +114,11 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       const result = await parseActivityFile(f)
       setData(result.data)
       setStartTime(result.startTime)
+      setHasPowerData(result.hasPowerData)
       setLapMarkers(result.lapMarkers || [])
-      if (result.isSmartRecording) {
-        setSmartRecordingWarning({
-          fileName: f.name,
-          avgInterval: result.avgInterval
-        })
-      }
     } catch (err) {
       console.error('File parse error:', err)
-      alert(err.message || 'Failed to parse file')
+      setErrorDialog({ open: true, message: err.message || 'Failed to parse file' })
     }
   }
 
@@ -115,25 +128,24 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     setCrr(0.004)
     setWSpd(0)
     setWDir(0)
-    setOffset(0)
     setRange([0, 100])
     setMaxIterations(500)
     setFilterGps(false)
     setFilterVirtual(false)
     setFilterIntensity(5)
+    setIsRailing(false)
+    setRailingDetails(null)
+    setHasPowerData(true)
     setLapMarkers([])
-    setAutoScaleY(false)
-    setShowLaps(true)
   }
 
   // Simulation calculation - compute virtual elevation for SELECTED RANGE ONLY
-  // Uses segment start values (i-1) for proper alignment
+  // Starts fresh at ele[sIdx], treats cropped region as standalone segment
   const sim = useMemo(() => {
     if (!data) return null
     const { pwr, v, a, ds, ele, b } = data
-    // Use consistent index calculation: round to nearest index
-    const sIdx = Math.round((range[0] / 100) * (pwr.length - 1))
-    const eIdx = Math.round((range[1] / 100) * (pwr.length - 1))
+    const sIdx = Math.floor((range[0] / 100) * pwr.length)
+    const eIdx = Math.floor((range[1] / 100) * pwr.length)
 
     if (sIdx >= eIdx || eIdx - sIdx < 2) {
       return { vEle: [], err: [], sIdx, eIdx, rmse: 0, anomalies: [], emptyRange: true }
@@ -143,6 +155,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     const wRad = wDir * (Math.PI / 180)
 
     // Arrays for the selected range only (same length as full data for chart compatibility)
+    // Values outside selected range are set to the boundary values for smooth display
     const vEle = new Array(pwr.length)
     const err = new Array(pwr.length)
 
@@ -151,23 +164,21 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     let cur = rangeStartElev
 
     // Compute virtual elevation for selected range
-    // Use physics values from START of each segment (i-1) for proper alignment
     for (let i = sIdx; i < eIdx; i++) {
       if (i > sIdx) {
-        const segStart = i - 1
-        const vg = Math.max(0.1, v[segStart])
-        let pi = segStart - iOff
+        const vg = Math.max(1.0, v[i])
+        let pi = i - iOff
         if (pi < 0) pi = 0
         if (pi >= pwr.length) pi = pwr.length - 1
 
         const pw = pwr[pi] * eff
-        const rh = rho * Math.exp(-ele[segStart] / 9000)
-        const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wRad)
+        const rh = rho
+        const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
 
         const fa = 0.5 * rh * cda * va * va * Math.sign(va)
         const ft = pw / vg
         const fr = mass * GRAVITY * crr
-        const fac = mass * a[segStart]
+        const fac = mass * a[i]
 
         cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
       }
@@ -175,7 +186,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       err[i] = cur - ele[i]
     }
 
-    // Fill outside range with boundary values (no discontinuity)
+    // Fill outside range with boundary values (no discontinuity, just flat extension)
     const startVEle = vEle[sIdx]
     const endVEle = vEle[eIdx - 1]
     const startErr = err[sIdx]
@@ -215,9 +226,16 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     if (!data) return
     setBusy(true)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
+      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, {
+        method: 'chung',
+        maxIterations,
+        cdaBounds: [cdaMin, cdaMax],
+        crrBounds: [crrMin, crrMax]
+      })
       setCda(res.cda)
       setCrr(res.crr)
+      setIsRailing(res.isRailing)
+      setRailingDetails(res.railingDetails)
       setBusy(false)
     }, 50)
   }
@@ -285,78 +303,124 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     }
   }
 
-  // Binary search to find closest index to a target distance
-  const findClosestIndex = useCallback((distArray, targetDist) => {
-    if (!distArray || distArray.length === 0) return 0
-    if (targetDist <= distArray[0]) return 0
-    if (targetDist >= distArray[distArray.length - 1]) return distArray.length - 1
-
-    let lo = 0, hi = distArray.length - 1
-    while (lo < hi - 1) {
-      const mid = Math.floor((lo + hi) / 2)
-      if (distArray[mid] <= targetDist) lo = mid
-      else hi = mid
-    }
-    return (targetDist - distArray[lo] <= distArray[hi] - targetDist) ? lo : hi
-  }, [])
-
-  // Range is stored as INDEX percentage for accurate cropping
+  // Calculate distance ranges from percentage ranges
+  // IMPORTANT: Use actual distances at the index boundaries to match vEle computation
   const distanceRange = useMemo(() => {
     if (!data) return [0, 0]
-    const sIdx = Math.round((range[0] / 100) * (data.dist.length - 1))
-    const eIdx = Math.round((range[1] / 100) * (data.dist.length - 1))
+    const sIdx = Math.floor((range[0] / 100) * data.dist.length)
+    const eIdx = Math.min(Math.floor((range[1] / 100) * data.dist.length), data.dist.length - 1)
     return [data.dist[sIdx] || 0, data.dist[eIdx] || 0]
   }, [data, range])
 
-  // Handle rangeslider changes - convert distance to closest index
-  const handleRelayout = useCallback((eventData) => {
-    if (!data) return
-    const len = data.dist.length
-    const maxDist = data.dist[len - 1]
+  const findDistanceIndex = useCallback((targetDist) => {
+    if (!data || !data.dist || data.dist.length === 0) return 0
+    const dist = data.dist
+    const minDist = dist[0] || 0
+    const maxDist = dist[dist.length - 1] || 0
+    const clampedDist = Math.max(minDist, Math.min(maxDist, targetDist))
 
-    let newStartDist, newEndDist
-    if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {
-      newStartDist = Math.max(0, eventData['xaxis.range[0]'])
-      newEndDist = Math.min(maxDist, eventData['xaxis.range[1]'])
-    } else if (eventData['xaxis.range']) {
-      [newStartDist, newEndDist] = eventData['xaxis.range']
-      newStartDist = Math.max(0, newStartDist)
-      newEndDist = Math.min(maxDist, newEndDist)
-    } else {
+    let lo = 0
+    let hi = dist.length - 1
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (dist[mid] < clampedDist) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }, [data])
+
+  const distanceToRangePct = useCallback((targetDist, inclusiveEnd = false) => {
+    if (!data || !data.dist || data.dist.length === 0) return 0
+    const idx = findDistanceIndex(targetDist)
+    const length = data.dist.length
+    const adjustedIdx = inclusiveEnd ? Math.min(length, idx + 1) : idx
+    return (adjustedIdx / length) * 100
+  }, [data, findDistanceIndex])
+
+  const normalizeRangePct = useCallback((startPct, endPct) => {
+    if (!data || !data.dist || data.dist.length < 2) return [0, 100]
+    const minStep = 100 / data.dist.length
+
+    let s = Number.isFinite(startPct) ? startPct : 0
+    let e = Number.isFinite(endPct) ? endPct : 100
+
+    if (s > e) [s, e] = [e, s]
+    s = Math.max(0, Math.min(100, s))
+    e = Math.max(0, Math.min(100, e))
+
+    if (e - s < minStep) {
+      if (s <= 100 - minStep) {
+        e = s + minStep
+      } else {
+        s = 100 - minStep
+        e = 100
+      }
+    }
+
+    return [s, e]
+  }, [data])
+
+  const applyDistanceCrop = useCallback((startDist, endDist) => {
+    if (!data) return
+    const startPct = distanceToRangePct(startDist, false)
+    const endPct = distanceToRangePct(endDist, true)
+    const [nextStart, nextEnd] = normalizeRangePct(startPct, endPct)
+
+    setRange((prev) => {
+      if (Math.abs(prev[0] - nextStart) < 1e-6 && Math.abs(prev[1] - nextEnd) < 1e-6) {
+        return prev
+      }
+      return [nextStart, nextEnd]
+    })
+  }, [data, distanceToRangePct, normalizeRangePct])
+
+  // Handle rangeslider changes
+  const handleRelayout = useCallback((eventData) => {
+    if (!data || !eventData) return
+
+    const parseFinite = (value) => {
+      const numeric = Number(value)
+      return Number.isFinite(numeric) ? numeric : null
+    }
+
+    const axes = ['xaxis', 'xaxis2', 'xaxis3']
+    let newStart
+    let newEnd
+
+    for (const axis of axes) {
+      const startValue = parseFinite(eventData[`${axis}.range[0]`])
+      const endValue = parseFinite(eventData[`${axis}.range[1]`])
+      if (startValue !== null && endValue !== null) {
+        newStart = startValue
+        newEnd = endValue
+        break
+      }
+
+      const rangeValues = eventData[`${axis}.range`]
+      if (Array.isArray(rangeValues) && rangeValues.length >= 2) {
+        const rangeStart = parseFinite(rangeValues[0])
+        const rangeEnd = parseFinite(rangeValues[1])
+        if (rangeStart !== null && rangeEnd !== null) {
+          newStart = rangeStart
+          newEnd = rangeEnd
+          break
+        }
+      }
+    }
+
+    if (newStart !== undefined && newEnd !== undefined) {
+      applyDistanceCrop(newStart, newEnd)
       return
     }
 
-    // Find closest indices to the selected distances
-    const startIdx = findClosestIndex(data.dist, newStartDist)
-    const endIdx = findClosestIndex(data.dist, newEndDist)
-
-    // Convert indices to percentages
-    const startPct = (startIdx / (len - 1)) * 100
-    const endPct = (endIdx / (len - 1)) * 100
-
-    if (Math.abs(startPct - range[0]) > 0.0001 || Math.abs(endPct - range[1]) > 0.0001) {
-      setRange([startPct, endPct])
+    // Only treat autorange as reset when no explicit x-range keys are present.
+    const hasXAutorange = Object.keys(eventData).some((key) => (
+      /^xaxis\d*\.autorange$/.test(key) && eventData[key] === true
+    ))
+    if (hasXAutorange) {
+      setRange([0, 100])
     }
-  }, [data, range, findClosestIndex])
-
-  // Nudge range by exactly 1 index
-  const nudgeRange = useCallback((edge, direction) => {
-    if (!data) return
-    const len = data.dist.length
-
-    const startIdx = Math.round((range[0] / 100) * (len - 1))
-    const endIdx = Math.round((range[1] / 100) * (len - 1))
-
-    if (edge === 'start') {
-      const newStartIdx = Math.max(0, Math.min(endIdx - 1, startIdx + direction))
-      const newStartPct = (newStartIdx / (len - 1)) * 100
-      setRange([newStartPct, range[1]])
-    } else {
-      const newEndIdx = Math.min(len - 1, Math.max(startIdx + 1, endIdx + direction))
-      const newEndPct = (newEndIdx / (len - 1)) * 100
-      setRange([range[0], newEndPct])
-    }
-  }, [data, range])
+  }, [data, applyDistanceCrop])
 
   // Calculate Y-axis range for visible data (when autoScaleY is enabled)
   const visibleYRange = useMemo(() => {
@@ -365,70 +429,145 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     const startDist = distanceRange[0]
     const endDist = distanceRange[1]
 
-    let minEle = Infinity, maxEle = -Infinity
-    let minErr = Infinity, maxErr = -Infinity
-    let minPwr = Infinity, maxPwr = -Infinity
+    let minEle = Infinity
+    let maxEle = -Infinity
+    let minErr = Infinity
+    let maxErr = -Infinity
+    let minPwr = Infinity
+    let maxPwr = -Infinity
+    let hasEle = false
+    let hasErr = false
+    let hasPwr = false
 
     const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
     const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
 
     for (let i = 0; i < data.dist.length; i++) {
       if (data.dist[i] >= startDist && data.dist[i] <= endDist) {
-        if (displayEle[i] !== undefined) {
+        if (Number.isFinite(displayEle[i])) {
+          hasEle = true
           minEle = Math.min(minEle, displayEle[i])
           maxEle = Math.max(maxEle, displayEle[i])
         }
-        if (displayVEle[i] !== undefined) {
+        if (Number.isFinite(displayVEle[i])) {
+          hasEle = true
           minEle = Math.min(minEle, displayVEle[i])
           maxEle = Math.max(maxEle, displayVEle[i])
         }
-        if (sim.err[i] !== undefined) {
+        if (Number.isFinite(sim.err[i])) {
+          hasErr = true
           minErr = Math.min(minErr, sim.err[i])
           maxErr = Math.max(maxErr, sim.err[i])
         }
-        if (data.pwr[i] !== undefined) {
+        if (Number.isFinite(data.pwr[i])) {
+          hasPwr = true
           minPwr = Math.min(minPwr, data.pwr[i])
           maxPwr = Math.max(maxPwr, data.pwr[i])
         }
       }
     }
 
-    const elePadding = (maxEle - minEle) * 0.05 || 1
-    const errPadding = (maxErr - minErr) * 0.05 || 0.5
-    const pwrPadding = (maxPwr - minPwr) * 0.05 || 10
-
-    return {
-      elevation: [minEle - elePadding, maxEle + elePadding],
-      error: [minErr - errPadding, maxErr + errPadding],
-      power: [minPwr - pwrPadding, maxPwr + pwrPadding]
+    const ranges = {}
+    if (hasEle) {
+      const elePadding = (maxEle - minEle) * 0.05 || 1
+      ranges.elevation = [minEle - elePadding, maxEle + elePadding]
     }
+    if (hasErr) {
+      const errPadding = (maxErr - minErr) * 0.05 || 0.5
+      ranges.error = [minErr - errPadding, maxErr + errPadding]
+    }
+    if (hasPwr) {
+      const pwrPadding = (maxPwr - minPwr) * 0.05 || 10
+      ranges.power = [minPwr - pwrPadding, maxPwr + pwrPadding]
+    }
+
+    return Object.keys(ranges).length > 0 ? ranges : null
   }, [autoScaleY, data, sim, distanceRange, filterGps, filterVirtual, filterIntensity])
 
-  // Chart layout with rangeslider
+  // Chart layout with rangeslider and lap markers
   const layout = useMemo(() => {
-    // Create lap marker shapes and annotations
-    const lapShapes = showLaps ? lapMarkers.map(lap => ({
+    // Create vertical line shapes for lap markers
+    const lapShapes = showLapLines ? lapMarkers.map(lap => ({
       type: 'line',
       x0: lap.distance,
       x1: lap.distance,
       y0: 0,
       y1: 1,
       yref: 'paper',
-      line: { color: 'rgba(255, 255, 255, 0.6)', width: 1, dash: 'dot' }
+      line: { color: 'rgba(251, 191, 36, 0.6)', width: 2, dash: 'dot' }
     })) : []
 
-    const lapAnnotations = showLaps ? lapMarkers.map(lap => ({
+    // Create annotations for lap labels
+    const lapAnnotations = showLapLines ? lapMarkers.map(lap => ({
       x: lap.distance,
       y: 1,
       yref: 'paper',
       text: lap.name,
       showarrow: false,
-      font: { size: 9, color: 'rgba(255, 255, 255, 0.8)' },
+      font: { size: 10, color: 'rgba(251, 191, 36, 0.9)' },
       textangle: -90,
       xanchor: 'left',
       yanchor: 'top',
       xshift: 3
     })) : []
+
+    // Reference lines for start and max elevation
+    const refShapes = []
+    const refAnnotations = []
+    if (showRefLines && sim && !sim.emptyRange && data) {
+      const startElev = data.ele[sim.sIdx]
+
+      let maxVElev = -Infinity
+      for (let i = sim.sIdx; i < sim.eIdx; i++) {
+        if (sim.vEle[i] > maxVElev) maxVElev = sim.vEle[i]
+      }
+
+      refShapes.push({
+        type: 'line',
+        x0: distanceRange[0],
+        x1: distanceRange[1],
+        y0: startElev,
+        y1: startElev,
+        yref: 'y',
+        line: { color: 'rgba(34, 197, 94, 0.7)', width: 1.5, dash: 'dash' }
+      })
+      refAnnotations.push({
+        x: distanceRange[0],
+        y: startElev,
+        yref: 'y',
+        text: `Start: ${startElev.toFixed(1)}m`,
+        showarrow: false,
+        font: { size: 9, color: 'rgba(34, 197, 94, 0.9)' },
+        xanchor: 'left',
+        yanchor: 'bottom',
+        bgcolor: 'rgba(15, 23, 42, 0.8)',
+        borderpad: 2
+      })
+
+      if (maxVElev > -Infinity) {
+        refShapes.push({
+          type: 'line',
+          x0: distanceRange[0],
+          x1: distanceRange[1],
+          y0: maxVElev,
+          y1: maxVElev,
+          yref: 'y',
+          line: { color: 'rgba(6, 182, 212, 0.7)', width: 1.5, dash: 'dash' }
+        })
+        refAnnotations.push({
+          x: distanceRange[1],
+          y: maxVElev,
+          yref: 'y',
+          text: `Max: ${maxVElev.toFixed(1)}m`,
+          showarrow: false,
+          font: { size: 9, color: 'rgba(6, 182, 212, 0.9)' },
+          xanchor: 'right',
+          yanchor: 'bottom',
+          bgcolor: 'rgba(15, 23, 42, 0.8)',
+          borderpad: 2
+        })
+      }
+    }
 
     return {
       autosize: true,
@@ -467,19 +606,21 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       yaxis2: {
         title: 'Error (m)',
         gridcolor: '#1e293b',
+        anchor: 'x',
         domain: [0.30, 0.50],
         ...(visibleYRange?.error && { range: visibleYRange.error })
       },
       yaxis3: {
         title: 'Power (W)',
         gridcolor: '#1e293b',
+        anchor: 'x',
         domain: [0.08, 0.26],
         ...(visibleYRange?.power && { range: visibleYRange.power })
       },
-      shapes: lapShapes,
-      annotations: lapAnnotations
+      shapes: [...lapShapes, ...refShapes],
+      annotations: [...lapAnnotations, ...refAnnotations]
     }
-  }, [distanceRange, visibleYRange, lapMarkers, showLaps])
+  }, [distanceRange, lapMarkers, showLapLines, showRefLines, sim, data, visibleYRange])
 
   const handleDeleteRun = (runId, runName) => {
     setDeleteDialog({ open: true, runId, runName })
@@ -588,10 +729,15 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             Upload GPX/FIT File
             <input type="file" accept=".gpx,.fit" onChange={onFile} className="hidden" />
           </label>
-          {!data && <p className="text-center text-xs text-gray-500 mt-2">Upload a file to add a run</p>}
+          {!data && <p className="text-center text-xs text-gray-500 mt-2">Upload a GPX or FIT file to add a run</p>}
           {data && fileName && (
             <div className="mt-2">
               <p className="text-center text-xs text-gray-400 truncate">{fileName}</p>
+              {!hasPowerData && (
+                <p className="text-center text-xs text-yellow-500 mt-1">
+                  Warning: No power data detected
+                </p>
+              )}
               <button onClick={resetAnalysis} className="w-full mt-2 text-xs text-gray-400 hover:text-white border border-dark-border rounded py-1 hover:bg-dark-input transition-colors">
                 Reset
               </button>
@@ -618,82 +764,162 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             {/* Fitted Values */}
             <div className="card">
               <h3 className="label-sm mb-3">Fitted Values</h3>
-              <div className="space-y-3">
+
+              {/* CdA/Crr Sliders */}
+              <div className="space-y-3 mb-3">
                 <div>
-                  <div className="flex justify-between items-center text-xs mb-1">
+                  <div className="flex justify-between text-xs mb-1">
                     <span className="text-green-400 font-medium">CdA</span>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={cdaNudge}
-                        onChange={e => setCdaNudge(parseFloat(e.target.value))}
-                        className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-400"
-                        title="Nudge amount"
-                      >
-                        <option value="0.01">±0.01</option>
-                        <option value="0.001">±0.001</option>
-                        <option value="0.0001">±0.0001</option>
-                      </select>
-                      <span className="font-mono font-bold">{cda.toFixed(4)}</span>
-                    </div>
+                    <span className="font-mono font-bold">{cda.toFixed(4)}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={() => setCda(Math.max(0.15, cda - cdaNudge))}
+                      onClick={() => setCda(Math.max(cdaMin, cda - cdaNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
+                      title={`-${cdaNudge}`}
                     >−</button>
-                    <input
-                      type="range"
-                      min="0.15"
-                      max="0.5"
-                      step="0.0001"
-                      value={cda}
-                      onChange={e => setCda(parseFloat(e.target.value))}
-                      className="slider-cda flex-1"
-                    />
+                    <input type="range" min={cdaMin} max={cdaMax} step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
                     <button
-                      onClick={() => setCda(Math.min(0.5, cda + cdaNudge))}
+                      onClick={() => setCda(Math.min(cdaMax, cda + cdaNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
+                      title={`+${cdaNudge}`}
                     >+</button>
+                  </div>
+                  <div className="flex items-center gap-1 mt-1">
+                    <span className="text-xxs text-gray-500">Nudge:</span>
+                    <select
+                      value={cdaNudge}
+                      onChange={e => setCdaNudge(parseFloat(e.target.value))}
+                      className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-300"
+                    >
+                      <option value={0.0001}>0.0001</option>
+                      <option value={0.0005}>0.0005</option>
+                      <option value={0.001}>0.001</option>
+                      <option value={0.005}>0.005</option>
+                      <option value={0.01}>0.01</option>
+                    </select>
                   </div>
                 </div>
                 <div>
-                  <div className="flex justify-between items-center text-xs mb-1">
+                  <div className="flex justify-between text-xs mb-1">
                     <span className="text-blue-400 font-medium">Crr</span>
-                    <div className="flex items-center gap-2">
-                      <select
-                        value={crrNudge}
-                        onChange={e => setCrrNudge(parseFloat(e.target.value))}
-                        className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-400"
-                        title="Nudge amount"
-                      >
-                        <option value="0.001">±0.001</option>
-                        <option value="0.0001">±0.0001</option>
-                        <option value="0.00001">±0.00001</option>
-                      </select>
-                      <span className="font-mono font-bold">{crr.toFixed(6)}</span>
-                    </div>
+                    <span className="font-mono font-bold">{crr.toFixed(5)}</span>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={() => setCrr(Math.max(0.002, crr - crrNudge))}
+                      onClick={() => setCrr(Math.max(crrMin, crr - crrNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
+                      title={`-${crrNudge}`}
                     >−</button>
-                    <input
-                      type="range"
-                      min="0.002"
-                      max="0.02"
-                      step="0.00001"
-                      value={crr}
-                      onChange={e => setCrr(parseFloat(e.target.value))}
-                      className="slider-crr flex-1"
-                    />
+                    <input type="range" min={crrMin} max={crrMax} step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
                     <button
-                      onClick={() => setCrr(Math.min(0.02, crr + crrNudge))}
+                      onClick={() => setCrr(Math.min(crrMax, crr + crrNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
+                      title={`+${crrNudge}`}
                     >+</button>
+                  </div>
+                  <div className="flex items-center gap-1 mt-1">
+                    <span className="text-xxs text-gray-500">Nudge:</span>
+                    <select
+                      value={crrNudge}
+                      onChange={e => setCrrNudge(parseFloat(e.target.value))}
+                      className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-300"
+                    >
+                      <option value={0.00001}>0.00001</option>
+                      <option value={0.00005}>0.00005</option>
+                      <option value={0.0001}>0.0001</option>
+                      <option value={0.0005}>0.0005</option>
+                      <option value={0.001}>0.001</option>
+                    </select>
                   </div>
                 </div>
               </div>
+
+              {/* Railing Warning */}
+              {isRailing && (
+                <div className="mb-3 p-2 bg-yellow-900/30 border border-yellow-500/50 rounded text-xs">
+                  <div className="flex items-center gap-2 text-yellow-400 font-medium mb-1">
+                    <span>⚠️ Solution at bounds</span>
+                  </div>
+                  <div className="text-yellow-300/80 text-xxs space-y-0.5">
+                    {railingDetails?.cdaAtLowerBound && <div>CdA at minimum ({cdaMin})</div>}
+                    {railingDetails?.cdaAtUpperBound && <div>CdA at maximum ({cdaMax})</div>}
+                    {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({crrMin})</div>}
+                    {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({crrMax})</div>}
+                  </div>
+                  <div className="text-gray-400 text-xxs mt-1">
+                    Try adjusting bounds below
+                  </div>
+                </div>
+              )}
+
+              {/* Solver Bounds */}
+              <details className="mb-3">
+                <summary className="text-xxs text-gray-500 cursor-pointer hover:text-gray-300">Solver Bounds</summary>
+                <div className="mt-2 p-2 bg-dark-bg rounded border border-dark-border space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xxs text-green-400">CdA Min</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={cdaMin}
+                        onChange={e => setCdaMin(parseFloat(e.target.value))}
+                        className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xxs text-green-400">CdA Max</label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={cdaMax}
+                        onChange={e => setCdaMax(parseFloat(e.target.value))}
+                        className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xxs text-blue-400">Crr Min</label>
+                      <input
+                        type="number"
+                        step="0.001"
+                        value={crrMin}
+                        onChange={e => setCrrMin(parseFloat(e.target.value))}
+                        className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xxs text-blue-400">Crr Max</label>
+                      <input
+                        type="number"
+                        step="0.001"
+                        value={crrMax}
+                        onChange={e => setCrrMax(parseFloat(e.target.value))}
+                        className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xxs text-gray-500">
+                    Tighter bounds can prevent degenerate solutions
+                  </div>
+                </div>
+              </details>
+
+              {/* Fit Quality Metrics */}
+              {sim && !sim.emptyRange && (
+                <div className="grid grid-cols-2 gap-2 text-xs p-2 bg-dark-bg rounded border border-dark-border">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">RMSE</span>
+                    <span className={`font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>{sim.rmse.toFixed(2)}m</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">R²</span>
+                    <span className={`font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>{(sim.r2 || 0).toFixed(4)}</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Experimental Features */}
@@ -723,13 +949,6 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     <label className="text-xxs text-gray-500 mb-1 block">Dir (°)</label>
                     <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
                   </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-xxs mb-1">
-                    <span className="text-orange-400">Time Lag</span>
-                    <span className="text-gray-400">{offset}s</span>
-                  </div>
-                  <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className="slider-lag" />
                 </div>
               </div>
 
@@ -899,34 +1118,34 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       <div className="flex-1 flex flex-col">
         {/* Chart Controls */}
         {data && (
-          <div className="flex items-center gap-6 px-6 py-2 border-b border-dark-border bg-dark-card/50">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2 px-6 py-2 border-b border-dark-border bg-dark-card/50">
+            <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
               <span className="text-xs text-gray-400">Range:</span>
-              {/* Start nudge - 1 data point per click */}
+              {/* Start nudge buttons */}
               <div className="flex items-center">
                 <button
-                  onClick={() => nudgeRange('start', -1)}
+                  onClick={() => setRange([Math.max(0, range[0] - 1), range[1]])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
-                  title="Move start back 1 point"
+                  title="Move start back"
                 >◀</button>
                 <button
-                  onClick={() => nudgeRange('start', 1)}
-                  className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border border-l-0 border-dark-border hover:bg-dark-input"
-                  title="Move start forward 1 point"
+                  onClick={() => setRange([Math.min(range[1] - 1, range[0] + 1), range[1]])}
+                  className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
+                  title="Move start forward"
                 >▶</button>
               </div>
               <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
-              {/* End nudge - 1 data point per click */}
+              {/* End nudge buttons */}
               <div className="flex items-center">
                 <button
-                  onClick={() => nudgeRange('end', -1)}
+                  onClick={() => setRange([range[0], Math.max(range[0] + 1, range[1] - 1)])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
-                  title="Move end back 1 point"
+                  title="Move end back"
                 >◀</button>
                 <button
-                  onClick={() => nudgeRange('end', 1)}
-                  className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border border-l-0 border-dark-border hover:bg-dark-input"
-                  title="Move end forward 1 point"
+                  onClick={() => setRange([range[0], Math.min(100, range[1] + 1)])}
+                  className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
+                  title="Move end forward"
                 >▶</button>
               </div>
               <button
@@ -938,30 +1157,125 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               </button>
               <button
                 onClick={() => setAutoScaleY(!autoScaleY)}
-                className={`text-xxs px-1.5 py-0.5 rounded border ${autoScaleY ? 'bg-indigo-900/50 border-indigo-500/50 text-indigo-400' : 'border-dark-border text-gray-500 hover:text-white hover:bg-dark-input'}`}
+                className={`text-xs font-semibold px-2 py-1 rounded border transition-colors ${
+                  autoScaleY
+                    ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200'
+                    : 'border-indigo-500/40 text-indigo-300 hover:bg-indigo-900/40'
+                }`}
                 title="Auto-scale Y axis to visible data"
               >
-                Autoscale Y
+                Autoscale Y: {autoScaleY ? 'On' : 'Off'}
               </button>
-              {lapMarkers.length > 0 && (
-                <button
-                  onClick={() => setShowLaps(!showLaps)}
-                  className={`text-xxs px-1.5 py-0.5 rounded border ${showLaps ? 'bg-white/10 border-white/30 text-white' : 'border-dark-border text-gray-500 hover:text-white hover:bg-dark-input'}`}
-                  title="Show/hide lap markers"
-                >
-                  Laps ({lapMarkers.length})
-                </button>
-              )}
+              <button
+                onClick={() => setShowRefLines(!showRefLines)}
+                className={`text-xs font-semibold px-2 py-1 rounded border transition-colors ${
+                  showRefLines
+                    ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200'
+                    : 'border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/40'
+                }`}
+                title="Show start/max elevation reference lines"
+              >
+                Ref Lines: {showRefLines ? 'On' : 'Off'}
+              </button>
+              <button
+                onClick={() => setShowLapLines(!showLapLines)}
+                disabled={lapMarkers.length === 0}
+                className={`text-xs font-semibold px-2 py-1 rounded border transition-colors ${
+                  lapMarkers.length === 0
+                    ? 'border-gray-700 text-gray-600 cursor-not-allowed'
+                    : showLapLines
+                      ? 'bg-amber-600/30 border-amber-400 text-amber-200'
+                      : 'border-amber-500/40 text-amber-300 hover:bg-amber-900/40'
+                }`}
+                title={lapMarkers.length > 0 ? 'Show/hide lap marker lines and labels' : 'No lap markers in this file'}
+              >
+                Lap Lines: {showLapLines ? 'On' : 'Off'}
+              </button>
             </div>
+            {/* Lap cropping controls */}
+            {lapMarkers.length > 0 && data && (() => {
+              const maxDist = data.dist[data.dist.length - 1]
+              const currentStartDist = distanceRange[0]
+              const currentEndDist = distanceRange[1]
+
+              // Find which lap index corresponds to current start/end
+              // Small tolerance for floating point precision
+              const tolerance = 0.1 // 0.1 meters
+
+              // Start: find the last lap that is at or before currentStartDist
+              let currentStartLapIdx = -1 // -1 means "Start"
+              for (let i = 0; i < lapMarkers.length; i++) {
+                if (lapMarkers[i].distance <= currentStartDist + tolerance) {
+                  currentStartLapIdx = i
+                }
+              }
+
+              // End: find the first lap that is at or after currentEndDist, or -1 for "End"
+              let currentEndLapIdx = -1 // -1 means "End"
+              for (let i = lapMarkers.length - 1; i >= 0; i--) {
+                if (lapMarkers[i].distance >= currentEndDist - tolerance) {
+                  currentEndLapIdx = i
+                }
+              }
+
+              return (
+                <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
+                  <span className="text-xs text-amber-400">Lap Crop:</span>
+                  <select
+                    className="text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-0.5 text-gray-300"
+                    value={currentStartLapIdx}
+                    onChange={(e) => {
+                      const lapIdx = parseInt(e.target.value)
+                      if (lapIdx === -1) {
+                        applyDistanceCrop(0, currentEndDist)
+                      } else {
+                        const lapDist = lapMarkers[lapIdx].distance
+                        applyDistanceCrop(lapDist, currentEndDist)
+                      }
+                    }}
+                    title="Crop start to lap"
+                  >
+                    <option value={-1}>Start</option>
+                    {lapMarkers.map((lap, idx) => (
+                      (currentEndLapIdx === -1 || idx < currentEndLapIdx) && (
+                        <option key={idx} value={idx}>{lap.name}</option>
+                      )
+                    ))}
+                  </select>
+                  <span className="text-xxs text-gray-500">to</span>
+                  <select
+                    className="text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-0.5 text-gray-300"
+                    value={currentEndLapIdx}
+                    onChange={(e) => {
+                      const lapIdx = parseInt(e.target.value)
+                      if (lapIdx === -1) {
+                        applyDistanceCrop(currentStartDist, maxDist)
+                      } else {
+                        const lapDist = lapMarkers[lapIdx].distance
+                        applyDistanceCrop(currentStartDist, lapDist)
+                      }
+                    }}
+                    title="Crop end to lap"
+                  >
+                    {lapMarkers.map((lap, idx) => (
+                      idx > currentStartLapIdx && (
+                        <option key={idx} value={idx}>{lap.name}</option>
+                      )
+                    ))}
+                    <option value={-1}>End</option>
+                  </select>
+                </div>
+              )
+            })()}
             {(filterGps || filterVirtual) && (
-              <span className="text-xxs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
+              <span className="text-xxs px-2 py-1 rounded bg-emerald-900/50 text-emerald-300 border border-emerald-500/30">
                 Filtered
               </span>
             )}
 
             {/* Prominent RMSE & R² Display */}
             {sim && !sim.emptyRange && (
-              <div className="flex items-center gap-4 ml-auto">
+              <div className="flex items-center gap-2 md:ml-auto">
                 <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-dark-bg border border-dark-border">
                   <span className="text-xxs text-gray-500 uppercase">RMSE</span>
                   <span className={`text-lg font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>
@@ -1004,12 +1318,12 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 onRelayout={handleRelayout}
                 useResizeHandler={true}
                 style={{ width: '100%', height: '100%' }}
-                config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
+                config={{ displayModeBar: true, responsive: true, doubleClick: 'reset', modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
               />
             )
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-2">
-              <p className="text-lg">Upload a GPX/FIT file to add a run to this variation</p>
+              <p className="text-lg">Upload a GPX or FIT file to add a run to this variation</p>
               <p className="text-sm text-gray-600">Each run will contribute to the variation's average CdA/Crr</p>
             </div>
           )}
@@ -1031,42 +1345,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       <AlertDialog
         isOpen={errorDialog.open}
         onClose={() => setErrorDialog({ open: false, message: '' })}
-        title="Error Saving"
+        title="Error"
         message={errorDialog.message}
         variant="error"
       />
-
-      {/* Smart Recording Warning Modal */}
-      {smartRecordingWarning && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-dark-card border border-dark-border rounded-xl p-6 max-w-md mx-4">
-            <div className="flex items-start gap-4">
-              <div className="flex-shrink-0 w-10 h-10 bg-amber-500/20 rounded-full flex items-center justify-center">
-                <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-white mb-2">Smart Recording Detected</h3>
-                <p className="text-sm text-gray-400 mb-3">
-                  The file <span className="text-white font-medium">{smartRecordingWarning.fileName}</span> appears to use smart recording (avg interval: {smartRecordingWarning.avgInterval}s) instead of 1-second recording.
-                </p>
-                <p className="text-sm text-gray-400 mb-4">
-                  For accurate CdA/Crr results, set your head unit to record at <strong className="text-white">1-second intervals</strong>. Smart recording creates gaps in the data that can affect analysis accuracy.
-                </p>
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => setSmartRecordingWarning(null)}
-                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium transition-colors"
-                  >
-                    I Understand
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }

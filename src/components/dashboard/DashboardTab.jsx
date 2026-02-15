@@ -121,8 +121,8 @@ export const DashboardTab = ({ onStudyClick }) => {
   }
 
   const allStudies = studies || []
-  const averagingStudies = allStudies.filter(s => s.study_mode === 'averaging')
-  const comparisonStudies = allStudies.filter(s => s.study_mode !== 'averaging')
+  const totalConfigurations = allStudies.reduce((sum, s) => sum + (s.variation_count || 0), 0)
+  const comparisonReadyStudies = allStudies.filter(s => (s.variation_count || 0) >= 2).length
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -139,14 +139,14 @@ export const DashboardTab = ({ onStudyClick }) => {
           <div className="text-3xl font-bold text-white">{allStudies.length}</div>
         </div>
         <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Averaging Studies</div>
-          <div className="text-3xl font-bold text-blue-400">{averagingStudies.length}</div>
-          <p className="text-xs text-gray-500 mt-1">Baseline establishment</p>
+          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Configurations</div>
+          <div className="text-3xl font-bold text-blue-400">{totalConfigurations}</div>
+          <p className="text-xs text-gray-500 mt-1">Across all studies</p>
         </div>
         <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Comparison Studies</div>
-          <div className="text-3xl font-bold text-green-400">{comparisonStudies.length}</div>
-          <p className="text-xs text-gray-500 mt-1">Equipment A/B tests</p>
+          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Comparison-Ready</div>
+          <div className="text-3xl font-bold text-green-400">{comparisonReadyStudies}</div>
+          <p className="text-xs text-gray-500 mt-1">2+ configurations</p>
         </div>
       </div>
 
@@ -157,7 +157,7 @@ export const DashboardTab = ({ onStudyClick }) => {
           <div className="space-y-3">
             {allStudies.slice(0, 5).map(study => {
               const varType = getVariableType(study.variable_type)
-              const isAveraging = study.study_mode === 'averaging'
+              const variableLabel = study.variable_label || varType.label
               return (
                 <button
                   key={study.id}
@@ -167,15 +167,13 @@ export const DashboardTab = ({ onStudyClick }) => {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <h4 className="font-medium text-white truncate">{study.name}</h4>
-                      <span className={`text-xxs px-2 py-0.5 rounded ${
-                        isAveraging ? 'bg-blue-900/30 text-blue-400' : 'bg-dark-card text-gray-400'
-                      }`}>
-                        {isAveraging ? 'Averaging' : varType.label}
+                      <span className="text-xxs px-2 py-0.5 rounded bg-dark-card text-gray-400">
+                        {variableLabel}
                       </span>
                     </div>
                     <div className="flex items-center gap-4 text-xs text-gray-500 mt-1">
                       <span>{study.mass}kg</span>
-                      {!isAveraging && <span>{study.variation_count || 0} configurations</span>}
+                      <span>{study.variation_count || 0} configurations</span>
                       <span>{new Date(study.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>

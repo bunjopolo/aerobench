@@ -1,16 +1,17 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import Plot from 'react-plotly.js'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { useFeatureFlags } from '../../hooks/useFeatureFlags'
-import { parseActivityFile } from '../../lib/activityFileParser'
-import { solveCdaCrr, solveCdaCrrClimb, solveCdaCrrShenDual, solveCdaCrrSweep, checkSteadyAcceleration, calculateBow, safeNum, GRAVITY } from '../../lib/physics'
+import { parseActivityFile } from '../../lib/gpxParser'
+import { solveCdaCrr, solveCdaCrrClimb, solveCdaCrrShenDual, solveCdaCrrSweep, calculateBow, safeNum, GRAVITY } from '../../lib/physics'
 import { lowPassFilter } from '../../lib/preprocessing'
 import { calculateAirDensity } from '../../lib/airDensity'
 import { SavePresetModal } from '../presets'
+import { AlertDialog } from '../ui'
 
 export const QuickTestTab = ({ presetsHook }) => {
   const { user } = useAuth()
-  const { isFeatureEnabled, isAdmin } = useFeatureFlags()
+  const { isFeatureEnabled } = useFeatureFlags()
 
   // Check which methods are available
   const hasShenMethod = isFeatureEnabled('method_shen')
@@ -32,6 +33,28 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [cdaNudge, setCdaNudge] = useState(0.001)
   const [crrNudge, setCrrNudge] = useState(0.0001)
 
+  // Solver bounds - user configurable to prevent railing
+  const [cdaMin, setCdaMin] = useState(0.15)
+  const [cdaMax, setCdaMax] = useState(0.50)
+  const [crrMin, setCrrMin] = useState(0.002)
+  const [crrMax, setCrrMax] = useState(0.012)
+
+  // Railing detection
+  const [isRailing, setIsRailing] = useState(false)
+  const [railingDetails, setRailingDetails] = useState(null)
+
+  // Clamp CdA when bounds change
+  useEffect(() => {
+    if (cda < cdaMin) setCda(cdaMin)
+    if (cda > cdaMax) setCda(cdaMax)
+  }, [cda, cdaMin, cdaMax])
+
+  // Clamp Crr when bounds change
+  useEffect(() => {
+    if (crr < crrMin) setCrr(crrMin)
+    if (crr > crrMax) setCrr(crrMax)
+  }, [crr, crrMin, crrMax])
+
   const [data, setData] = useState(null)
   const [startTime, setStartTime] = useState(null)
   const [fileName, setFileName] = useState(null)
@@ -40,15 +63,16 @@ export const QuickTestTab = ({ presetsHook }) => {
 
   // Second file state (for climb mode)
   const [data2, setData2] = useState(null)
-  const [startTime2, setStartTime2] = useState(null)
+  const [, setStartTime2] = useState(null)
   const [fileName2, setFileName2] = useState(null)
   const [hasPowerData2, setHasPowerData2] = useState(true)
+  const [, setLapMarkers2] = useState([])
 
   // Per-file ranges (for climb mode)
   const [range2, setRange2] = useState([0, 100])
 
-  // Per-file offsets (for climb mode)
-  const [offset2, setOffset2] = useState(0)
+  // Sample lag fixed at 0 to keep workflow simple
+  const offset2 = 0
 
   // Climb mode result
   const [climbResult, setClimbResult] = useState(null)
@@ -56,7 +80,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   // Environment
   const [wSpd, setWSpd] = useState(0)
   const [wDir, setWDir] = useState(0)
-  const [offset, setOffset] = useState(0)
+  const offset = 0
   const [range, setRange] = useState([0, 100])
 
   // Solver
@@ -71,17 +95,13 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [filterVirtual, setFilterVirtual] = useState(false)
   const [filterIntensity, setFilterIntensity] = useState(5)
 
+  // Y-axis autoscale (scale to visible range)
+  const [autoScaleY, setAutoScaleY] = useState(false)
 
-  // Lap markers visibility
-  const [showLaps, setShowLaps] = useState(true)
-
-  // Plot revision counter - increment to force Plotly to completely re-render
-  const [plotRevision, setPlotRevision] = useState(0)
-
-  // Rescale function - forces chart to re-render with current calculated ranges
-  const rescaleChart = useCallback(() => {
-    setPlotRevision(r => r + 1)
-  }, [])
+  // Reference lines (start/max elevation)
+  const [showRefLines, setShowRefLines] = useState(false)
+  // Lap marker lines/labels
+  const [showLapLines, setShowLapLines] = useState(true)
 
   // Shen method state
   const [shenResult, setShenResult] = useState(null)
@@ -96,9 +116,6 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [sweepCrrMax, setSweepCrrMax] = useState(0.020)
   const [sweepResolution, setSweepResolution] = useState(70)
 
-  // Smart recording warning
-  const [smartRecordingWarning, setSmartRecordingWarning] = useState(null)
-
   // Air density calculator state
   const [showRhoCalc, setShowRhoCalc] = useState(false)
   const [rhoTemp, setRhoTemp] = useState(20) // °C
@@ -106,6 +123,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [rhoPressure, setRhoPressure] = useState(1013.25) // hPa
   const [rhoHumidity, setRhoHumidity] = useState(50) // %
   const [rhoUseElevation, setRhoUseElevation] = useState(true) // true = use elevation, false = use pressure
+  const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
 
   // Calculate air density from current state values
   const getCalculatedRho = () => {
@@ -121,7 +139,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     setRho(getCalculatedRho())
   }
 
-  // File Handler for first file
+  // File Handler for first file (supports GPX and FIT)
   const onFile = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -132,19 +150,13 @@ export const QuickTestTab = ({ presetsHook }) => {
       setStartTime(result.startTime)
       setHasPowerData(result.hasPowerData)
       setLapMarkers(result.lapMarkers || [])
-      if (result.isSmartRecording) {
-        setSmartRecordingWarning({
-          fileName: f.name,
-          avgInterval: result.avgInterval
-        })
-      }
     } catch (err) {
       console.error('File parse error:', err)
-      alert(err.message || 'Failed to parse file')
+      setErrorDialog({ open: true, message: err.message || 'Failed to parse file' })
     }
   }
 
-  // File Handler for second file (climb mode)
+  // File Handler for second file (climb mode) - supports GPX and FIT
   const onFile2 = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -154,15 +166,10 @@ export const QuickTestTab = ({ presetsHook }) => {
       setData2(result.data)
       setStartTime2(result.startTime)
       setHasPowerData2(result.hasPowerData)
-      if (result.isSmartRecording) {
-        setSmartRecordingWarning({
-          fileName: f.name,
-          avgInterval: result.avgInterval
-        })
-      }
+      setLapMarkers2(result.lapMarkers || [])
     } catch (err) {
       console.error('File parse error:', err)
-      alert(err.message || 'Failed to parse file')
+      setErrorDialog({ open: true, message: err.message || 'Failed to parse file' })
     }
   }
 
@@ -177,12 +184,11 @@ export const QuickTestTab = ({ presetsHook }) => {
     setFileName2(null)
     setStartTime2(null)
     setHasPowerData2(true)
+    setLapMarkers2([])
     setCda(0.32)
     setCrr(0.004)
     setWSpd(0)
     setWDir(0)
-    setOffset(0)
-    setOffset2(0)
     setRange([0, 100])
     setRange2([0, 100])
     setMethod('chung')
@@ -205,9 +211,8 @@ export const QuickTestTab = ({ presetsHook }) => {
   const sim = useMemo(() => {
     if (!data) return null
     const { pwr, v, a, ds, ele, b } = data
-    // Use consistent index calculation: round to nearest index
-    const sIdx = Math.round((range[0] / 100) * (pwr.length - 1))
-    const eIdx = Math.round((range[1] / 100) * (pwr.length - 1))
+    const sIdx = Math.floor((range[0] / 100) * pwr.length)
+    const eIdx = Math.floor((range[1] / 100) * pwr.length)
 
     if (sIdx >= eIdx || eIdx - sIdx < 2) {
       return { vEle: [], err: [], sIdx, eIdx, rmse: 0, anomalies: [], emptyRange: true }
@@ -226,24 +231,21 @@ export const QuickTestTab = ({ presetsHook }) => {
     let cur = rangeStartElev
 
     // Compute virtual elevation for selected range
-    // Use physics values from START of each segment (i-1) for proper alignment
-    // ds[i] is distance from point i-1 to i, so use conditions at i-1
     for (let i = sIdx; i < eIdx; i++) {
       if (i > sIdx) {
-        const segStart = i - 1
-        const vg = Math.max(0.1, v[segStart])
-        let pi = segStart - iOff
-        if (pi < sIdx) pi = sIdx        // Clamp to crop start
-        if (pi >= eIdx) pi = eIdx - 1   // Clamp to crop end
+        const vg = Math.max(1.0, v[i])
+        let pi = i - iOff
+        if (pi < 0) pi = 0
+        if (pi >= pwr.length) pi = pwr.length - 1
 
         const pw = pwr[pi] * eff
-        const rh = rho * Math.exp(-ele[segStart] / 9000)
-        const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wRad)
+        const rh = rho
+        const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
 
         const fa = 0.5 * rh * cda * va * va * Math.sign(va)
         const ft = pw / vg
         const fr = mass * GRAVITY * crr
-        const fac = mass * a[segStart]
+        const fac = mass * a[i]
 
         cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
       }
@@ -289,69 +291,51 @@ export const QuickTestTab = ({ presetsHook }) => {
     return { vEle, err, sIdx, eIdx, rmse, r2, netElev }
   }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range, method])
 
-  // Simulation calculation for second file (climb/shen mode) - SELECTED RANGE ONLY
+  // Simulation calculation for second file (climb/shen mode) - full virtual elevation
   const sim2 = useMemo(() => {
     if (!data2 || (method !== 'climb' && method !== 'shen')) return null
     const { pwr, v, a, ds, ele, b } = data2
-    // Use consistent index calculation: round to nearest index
-    const sIdx = Math.round((range2[0] / 100) * (pwr.length - 1))
-    const eIdx = Math.round((range2[1] / 100) * (pwr.length - 1))
+    const sIdx = Math.floor((range2[0] / 100) * pwr.length)
+    const eIdx = Math.floor((range2[1] / 100) * pwr.length)
 
     if (sIdx >= eIdx || eIdx - sIdx < 2) {
       return { vEle: [], err: [], sIdx, eIdx, rmse: 0, emptyRange: true }
     }
 
+    // Compute virtual elevation for FULL dataset
+    const vEle = new Array(pwr.length).fill(0)
+    const err = new Array(pwr.length).fill(0)
+
+    // For Shen method: start at 0 (flat ground assumption)
+    // For other methods: start at GPS elevation
+    const startElev = method === 'shen' ? 0 : ele[0]
+    vEle[0] = startElev
+    let cur = startElev
+
     const iOff = Math.round(offset2)
     const wRad = wDir * (Math.PI / 180)
 
-    // Arrays for the selected range only (same length as full data for chart compatibility)
-    const vEle = new Array(pwr.length)
-    const err = new Array(pwr.length)
+    for (let i = 0; i < pwr.length; i++) {
+      const vg = Math.max(1.0, v[i])
+      let pi = i - iOff
+      if (pi < 0) pi = 0
+      if (pi >= pwr.length) pi = pwr.length - 1
 
-    // For Shen method: start at 0 (flat ground assumption)
-    // For other methods: start at GPS elevation of crop start
-    const rangeStartElev = method === 'shen' ? 0 : ele[sIdx]
-    let cur = rangeStartElev
+      const pw = pwr[pi] * eff
+      const rh = rho
+      const va = vg + wSpd * Math.cos(b[i] * (Math.PI / 180) - wRad)
 
-    // Compute virtual elevation for selected range only
-    // Use physics values from START of each segment (i-1) for proper alignment
-    for (let i = sIdx; i < eIdx; i++) {
-      if (i > sIdx) {
-        const segStart = i - 1
-        const vg = Math.max(0.1, v[segStart])
-        let pi = segStart - iOff
-        if (pi < sIdx) pi = sIdx        // Clamp to crop start
-        if (pi >= eIdx) pi = eIdx - 1   // Clamp to crop end
+      const fa = 0.5 * rh * cda * va * va * Math.sign(va)
+      const ft = pw / vg
+      const fr = mass * GRAVITY * crr
+      const fac = mass * a[i]
 
-        const pw = pwr[pi] * eff
-        const rh = rho * Math.exp(-ele[segStart] / 9000)
-        const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wRad)
-
-        const fa = 0.5 * rh * cda * va * va * Math.sign(va)
-        const ft = pw / vg
-        const fr = mass * GRAVITY * crr
-        const fac = mass * a[segStart]
-
+      if (i > 0) {
         cur += ((ft - fr - fac - fa) / (mass * GRAVITY)) * ds[i]
       }
       vEle[i] = cur
       // For Shen: error is deviation from flat (0), for others: deviation from GPS
       err[i] = method === 'shen' ? cur : cur - ele[i]
-    }
-
-    // Fill outside range with boundary values (for display)
-    const startVEle = vEle[sIdx]
-    const endVEle = vEle[eIdx - 1]
-    const startErr = err[sIdx]
-    const endErr = err[eIdx - 1]
-
-    for (let i = 0; i < sIdx; i++) {
-      vEle[i] = startVEle
-      err[i] = startErr
-    }
-    for (let i = eIdx; i < pwr.length; i++) {
-      vEle[i] = endVEle
-      err[i] = endErr
     }
 
     // Calculate RMSE only within the selected range
@@ -369,12 +353,6 @@ export const QuickTestTab = ({ presetsHook }) => {
 
     return { vEle, err, sIdx, eIdx, rmse, netElev }
   }, [data2, cda, crr, mass, eff, rho, offset2, wSpd, wDir, range2, method])
-
-  // Check if data is suitable for Shen method (steady acceleration)
-  const accelCheck = useMemo(() => {
-    if (!data || !sim || sim.emptyRange) return null
-    return checkSteadyAcceleration(data, sim.sIdx, sim.eIdx)
-  }, [data, sim])
 
   // Calculate current bow for display
   const currentBow = useMemo(() => {
@@ -396,9 +374,16 @@ export const QuickTestTab = ({ presetsHook }) => {
     setBusy(true)
     setShenResult(null)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
+      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, {
+        method: 'chung',
+        maxIterations,
+        cdaBounds: [cdaMin, cdaMax],
+        crrBounds: [crrMin, crrMax]
+      })
       setCda(res.cda)
       setCrr(res.crr)
+      setIsRailing(res.isRailing)
+      setRailingDetails(res.railingDetails)
       setBusy(false)
     }, 50)
   }
@@ -416,11 +401,13 @@ export const QuickTestTab = ({ presetsHook }) => {
         mass, eff, rho,
         offset, offset2,
         wSpd, wDir,
-        { maxIterations }
+        { maxIterations, cdaBounds: [cdaMin, cdaMax], crrBounds: [crrMin, crrMax] }
       )
       setCda(res.cda)
       setCrr(res.crr)
       setShenResult(res)
+      setIsRailing(res.isRailing)
+      setRailingDetails(res.railingDetails)
       setBusy(false)
     }, 50)
   }
@@ -437,11 +424,13 @@ export const QuickTestTab = ({ presetsHook }) => {
         mass, eff, rho,
         offset, offset2,
         wSpd, wDir,
-        { maxIterations }
+        { maxIterations, cdaBounds: [cdaMin, cdaMax], crrBounds: [crrMin, crrMax] }
       )
       setCda(res.cda)
       setCrr(res.crr)
       setClimbResult(res)
+      setIsRailing(res.isRailing)
+      setRailingDetails(res.railingDetails)
       setBusy(false)
     }, 50)
   }
@@ -514,108 +503,203 @@ export const QuickTestTab = ({ presetsHook }) => {
     setFetchingW(false)
   }
 
-  // Binary search to find closest index to a target distance
-  const findClosestIndex = useCallback((distArray, targetDist) => {
-    if (!distArray || distArray.length === 0) return 0
-    if (targetDist <= distArray[0]) return 0
-    if (targetDist >= distArray[distArray.length - 1]) return distArray.length - 1
-
-    let lo = 0, hi = distArray.length - 1
-    while (lo < hi - 1) {
-      const mid = Math.floor((lo + hi) / 2)
-      if (distArray[mid] <= targetDist) lo = mid
-      else hi = mid
-    }
-    // Return the closer of the two
-    return (targetDist - distArray[lo] <= distArray[hi] - targetDist) ? lo : hi
-  }, [])
-
-  // Range is now stored as INDEX percentage (not distance percentage)
-  // This ensures exact index recovery when converting back
+  // Calculate distance ranges from percentage ranges
+  // IMPORTANT: Use actual distances at the index boundaries to match vEle computation
   const distanceRange = useMemo(() => {
     if (!data) return [0, 0]
-    const sIdx = Math.round((range[0] / 100) * (data.dist.length - 1))
-    const eIdx = Math.round((range[1] / 100) * (data.dist.length - 1))
+    const sIdx = Math.floor((range[0] / 100) * data.dist.length)
+    const eIdx = Math.min(Math.floor((range[1] / 100) * data.dist.length), data.dist.length - 1)
     return [data.dist[sIdx] || 0, data.dist[eIdx] || 0]
   }, [data, range])
 
   const distanceRange2 = useMemo(() => {
     if (!data2) return [0, 0]
-    const sIdx = Math.round((range2[0] / 100) * (data2.dist.length - 1))
-    const eIdx = Math.round((range2[1] / 100) * (data2.dist.length - 1))
+    const sIdx = Math.floor((range2[0] / 100) * data2.dist.length)
+    const eIdx = Math.min(Math.floor((range2[1] / 100) * data2.dist.length), data2.dist.length - 1)
     return [data2.dist[sIdx] || 0, data2.dist[eIdx] || 0]
   }, [data2, range2])
 
+  const findDistanceIndex = useCallback((targetDist) => {
+    if (!data || !data.dist || data.dist.length === 0) return 0
+    const dist = data.dist
+    const minDist = dist[0] || 0
+    const maxDist = dist[dist.length - 1] || 0
+    const clampedDist = Math.max(minDist, Math.min(maxDist, targetDist))
+
+    let lo = 0
+    let hi = dist.length - 1
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (dist[mid] < clampedDist) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }, [data])
+
+  const distanceToRangePct = useCallback((targetDist, inclusiveEnd = false) => {
+    if (!data || !data.dist || data.dist.length === 0) return 0
+    const idx = findDistanceIndex(targetDist)
+    const length = data.dist.length
+    const adjustedIdx = inclusiveEnd ? Math.min(length, idx + 1) : idx
+    return (adjustedIdx / length) * 100
+  }, [data, findDistanceIndex])
+
+  const normalizeRangePct = useCallback((startPct, endPct) => {
+    if (!data || !data.dist || data.dist.length < 2) return [0, 100]
+    const minStep = 100 / data.dist.length
+
+    let s = Number.isFinite(startPct) ? startPct : 0
+    let e = Number.isFinite(endPct) ? endPct : 100
+
+    if (s > e) [s, e] = [e, s]
+    s = Math.max(0, Math.min(100, s))
+    e = Math.max(0, Math.min(100, e))
+
+    if (e - s < minStep) {
+      if (s <= 100 - minStep) {
+        e = s + minStep
+      } else {
+        s = 100 - minStep
+        e = 100
+      }
+    }
+
+    return [s, e]
+  }, [data])
+
+  const applyDistanceCrop = useCallback((startDist, endDist) => {
+    if (!data) return
+    const startPct = distanceToRangePct(startDist, false)
+    const endPct = distanceToRangePct(endDist, true)
+    const [nextStart, nextEnd] = normalizeRangePct(startPct, endPct)
+
+    setRange((prev) => {
+      if (Math.abs(prev[0] - nextStart) < 1e-6 && Math.abs(prev[1] - nextEnd) < 1e-6) {
+        return prev
+      }
+      return [nextStart, nextEnd]
+    })
+  }, [data, distanceToRangePct, normalizeRangePct])
+
+  const findDistanceIndex2 = useCallback((targetDist) => {
+    if (!data2 || !data2.dist || data2.dist.length === 0) return 0
+    const dist = data2.dist
+    const minDist = dist[0] || 0
+    const maxDist = dist[dist.length - 1] || 0
+    const clampedDist = Math.max(minDist, Math.min(maxDist, targetDist))
+
+    let lo = 0
+    let hi = dist.length - 1
+    while (lo < hi) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (dist[mid] < clampedDist) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }, [data2])
+
+  const distanceToRangePct2 = useCallback((targetDist, inclusiveEnd = false) => {
+    if (!data2 || !data2.dist || data2.dist.length === 0) return 0
+    const idx = findDistanceIndex2(targetDist)
+    const length = data2.dist.length
+    const adjustedIdx = inclusiveEnd ? Math.min(length, idx + 1) : idx
+    return (adjustedIdx / length) * 100
+  }, [data2, findDistanceIndex2])
+
+  const normalizeRangePct2 = useCallback((startPct, endPct) => {
+    if (!data2 || !data2.dist || data2.dist.length < 2) return [0, 100]
+    const minStep = 100 / data2.dist.length
+
+    let s = Number.isFinite(startPct) ? startPct : 0
+    let e = Number.isFinite(endPct) ? endPct : 100
+
+    if (s > e) [s, e] = [e, s]
+    s = Math.max(0, Math.min(100, s))
+    e = Math.max(0, Math.min(100, e))
+
+    if (e - s < minStep) {
+      if (s <= 100 - minStep) {
+        e = s + minStep
+      } else {
+        s = 100 - minStep
+        e = 100
+      }
+    }
+
+    return [s, e]
+  }, [data2])
+
+  const applyDistanceCrop2 = useCallback((startDist, endDist) => {
+    if (!data2) return
+    const startPct = distanceToRangePct2(startDist, false)
+    const endPct = distanceToRangePct2(endDist, true)
+    const [nextStart, nextEnd] = normalizeRangePct2(startPct, endPct)
+
+    setRange2((prev) => {
+      if (Math.abs(prev[0] - nextStart) < 1e-6 && Math.abs(prev[1] - nextEnd) < 1e-6) {
+        return prev
+      }
+      return [nextStart, nextEnd]
+    })
+  }, [data2, distanceToRangePct2, normalizeRangePct2])
+
   // Handle rangeslider changes for file 1
-  // Convert selected distance to closest index, then store as index percentage
   const handleRelayout = useCallback((eventData) => {
-    if (!data) return
+    if (!eventData || (!data && !data2)) return
 
-    // Handle double-click zoom reset (Plotly sends autorange: true)
-    if (eventData['xaxis.autorange']) {
-      setRange([0, 100])
+    const parseFinite = (value) => {
+      const numeric = Number(value)
+      return Number.isFinite(numeric) ? numeric : null
+    }
+
+    const axes = ['xaxis', 'xaxis2', 'xaxis3']
+    let newStart
+    let newEnd
+
+    for (const axis of axes) {
+      const startValue = parseFinite(eventData[`${axis}.range[0]`])
+      const endValue = parseFinite(eventData[`${axis}.range[1]`])
+      if (startValue !== null && endValue !== null) {
+        newStart = startValue
+        newEnd = endValue
+        break
+      }
+
+      const rangeValues = eventData[`${axis}.range`]
+      if (Array.isArray(rangeValues) && rangeValues.length >= 2) {
+        const rangeStart = parseFinite(rangeValues[0])
+        const rangeEnd = parseFinite(rangeValues[1])
+        if (rangeStart !== null && rangeEnd !== null) {
+          newStart = rangeStart
+          newEnd = rangeEnd
+          break
+        }
+      }
+    }
+
+    if (newStart !== undefined && newEnd !== undefined) {
+      if (data) applyDistanceCrop(newStart, newEnd)
+      if (data2 && (method === 'shen' || method === 'climb')) applyDistanceCrop2(newStart, newEnd)
       return
     }
 
-    const len = data.dist.length
-    const maxDist = data.dist[len - 1]
-
-    let newStartDist, newEndDist
-    if (eventData['xaxis.range[0]'] !== undefined && eventData['xaxis.range[1]'] !== undefined) {
-      newStartDist = Math.max(0, eventData['xaxis.range[0]'])
-      newEndDist = Math.min(maxDist, eventData['xaxis.range[1]'])
-    } else if (eventData['xaxis.range']) {
-      [newStartDist, newEndDist] = eventData['xaxis.range']
-      newStartDist = Math.max(0, newStartDist)
-      newEndDist = Math.min(maxDist, newEndDist)
-    } else {
-      return
+    // Only treat autorange as reset when no explicit x-range keys are present.
+    const hasXAutorange = Object.keys(eventData).some((key) => (
+      /^xaxis\d*\.autorange$/.test(key) && eventData[key] === true
+    ))
+    if (hasXAutorange) {
+      if (data) setRange([0, 100])
+      if (data2 && (method === 'shen' || method === 'climb')) setRange2([0, 100])
     }
+  }, [data, data2, method, applyDistanceCrop, applyDistanceCrop2])
 
-    // Find closest indices to the selected distances
-    const startIdx = findClosestIndex(data.dist, newStartDist)
-    const endIdx = findClosestIndex(data.dist, newEndDist)
-
-    // Convert indices to percentages (high precision)
-    const startPct = (startIdx / (len - 1)) * 100
-    const endPct = (endIdx / (len - 1)) * 100
-
-    if (Math.abs(startPct - range[0]) > 0.0001 || Math.abs(endPct - range[1]) > 0.0001) {
-      setRange([startPct, endPct])
-    }
-  }, [data, range, findClosestIndex])
-
-  // Nudge range by exactly 1 index (moves to adjacent data point)
-  // Works with indices directly to avoid floating point errors
-  const nudgeRange = useCallback((edge, direction) => {
-    if (!data) return
-    const len = data.dist.length
-
-    // Convert current range percentages to indices
-    const startIdx = Math.round((range[0] / 100) * (len - 1))
-    const endIdx = Math.round((range[1] / 100) * (len - 1))
-
-    if (edge === 'start') {
-      // Move start index by 1, clamp to valid range
-      const newStartIdx = Math.max(0, Math.min(endIdx - 1, startIdx + direction))
-      const newStartPct = (newStartIdx / (len - 1)) * 100
-      setRange([newStartPct, range[1]])
-    } else {
-      // Move end index by 1, clamp to valid range
-      const newEndIdx = Math.min(len - 1, Math.max(startIdx + 1, endIdx + direction))
-      const newEndPct = (newEndIdx / (len - 1)) * 100
-      setRange([range[0], newEndPct])
-    }
-  }, [data, range])
-
-  // Calculate Y-axis range for visible/cropped data (always autoscale to fill view)
-  // Uses index-based iteration within the selected range to avoid flat extension values
+  // Calculate Y-axis range for visible data (when autoScaleY is enabled)
   const visibleYRange = useMemo(() => {
-    if (!data || !sim || sim.emptyRange) return null
+    if (!autoScaleY || !data || !sim) return null
 
-    const sIdx = sim.sIdx
-    const eIdx = sim.eIdx
-    if (sIdx >= eIdx) return null
+    // Find indices within the visible distance range
+    const startDist = distanceRange[0]
+    const endDist = distanceRange[1]
 
     let minEle = Infinity
     let maxEle = -Infinity
@@ -623,168 +707,217 @@ export const QuickTestTab = ({ presetsHook }) => {
     let maxErr = -Infinity
     let minPwr = Infinity
     let maxPwr = -Infinity
+    let hasEle = false
+    let hasErr = false
+    let hasPwr = false
 
     const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
     const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
 
-    // Iterate by index within selected range only (avoids flat extensions outside crop)
-    for (let i = sIdx; i < eIdx; i++) {
-      // Elevation (both GPS and virtual)
-      if (isFinite(displayEle[i])) {
-        minEle = Math.min(minEle, displayEle[i])
-        maxEle = Math.max(maxEle, displayEle[i])
-      }
-      if (isFinite(displayVEle[i])) {
-        minEle = Math.min(minEle, displayVEle[i])
-        maxEle = Math.max(maxEle, displayVEle[i])
-      }
-      // Error
-      if (isFinite(sim.err[i])) {
-        minErr = Math.min(minErr, sim.err[i])
-        maxErr = Math.max(maxErr, sim.err[i])
-      }
-      // Power
-      if (isFinite(data.pwr[i])) {
-        minPwr = Math.min(minPwr, data.pwr[i])
-        maxPwr = Math.max(maxPwr, data.pwr[i])
+    for (let i = 0; i < data.dist.length; i++) {
+      if (data.dist[i] >= startDist && data.dist[i] <= endDist) {
+        // Elevation (both GPS and virtual)
+        if (Number.isFinite(displayEle[i])) {
+          hasEle = true
+          minEle = Math.min(minEle, displayEle[i])
+          maxEle = Math.max(maxEle, displayEle[i])
+        }
+        if (Number.isFinite(displayVEle[i])) {
+          hasEle = true
+          minEle = Math.min(minEle, displayVEle[i])
+          maxEle = Math.max(maxEle, displayVEle[i])
+        }
+        // Error
+        if (Number.isFinite(sim.err[i])) {
+          hasErr = true
+          minErr = Math.min(minErr, sim.err[i])
+          maxErr = Math.max(maxErr, sim.err[i])
+        }
+        // Power
+        if (Number.isFinite(data.pwr[i])) {
+          hasPwr = true
+          minPwr = Math.min(minPwr, data.pwr[i])
+          maxPwr = Math.max(maxPwr, data.pwr[i])
+        }
       }
     }
 
-    // Guard: if no valid elevation data found, return null
-    if (!isFinite(minEle) || !isFinite(maxEle)) return null
-
-    // Add padding (5% of range, with minimum padding)
-    const eleRange = maxEle - minEle
-    const elePadding = eleRange > 0 ? eleRange * 0.05 : 1
-    const errRange = maxErr - minErr
-    const errPadding = isFinite(errRange) && errRange > 0 ? errRange * 0.05 : 0.5
-    const pwrRange = maxPwr - minPwr
-    const pwrPadding = isFinite(pwrRange) && pwrRange > 0 ? pwrRange * 0.05 : 10
-
-    return {
-      elevation: [minEle - elePadding, maxEle + elePadding],
-      error: isFinite(minErr) && isFinite(maxErr) ? [minErr - errPadding, maxErr + errPadding] : null,
-      power: isFinite(minPwr) && isFinite(maxPwr) ? [minPwr - pwrPadding, maxPwr + pwrPadding] : null
+    const ranges = {}
+    if (hasEle) {
+      const elePadding = (maxEle - minEle) * 0.05 || 1
+      ranges.elevation = [minEle - elePadding, maxEle + elePadding]
     }
-  }, [data, sim, filterGps, filterVirtual, filterIntensity])
+    if (hasErr) {
+      const errPadding = (maxErr - minErr) * 0.05 || 0.5
+      ranges.error = [minErr - errPadding, maxErr + errPadding]
+    }
+    if (hasPwr) {
+      const pwrPadding = (maxPwr - minPwr) * 0.05 || 10
+      ranges.power = [minPwr - pwrPadding, maxPwr + pwrPadding]
+    }
 
-  // Chart layout with rangeslider - mode-aware for proper panel configuration
+    return Object.keys(ranges).length > 0 ? ranges : null
+  }, [autoScaleY, data, sim, distanceRange, filterGps, filterVirtual, filterIntensity])
+
+  // Chart layout with rangeslider and lap markers
   const layout = useMemo(() => {
-    const is2Panel = method === 'shen' || method === 'climb'
-
-    // Create lap marker shapes (vertical lines) and annotations (only if showLaps is true)
-    const lapShapes = showLaps ? lapMarkers.map(lap => ({
+    // Create vertical line shapes for lap markers
+    const lapShapes = showLapLines ? lapMarkers.map(lap => ({
       type: 'line',
       x0: lap.distance,
       x1: lap.distance,
       y0: 0,
       y1: 1,
       yref: 'paper',
-      line: { color: 'rgba(255, 255, 255, 0.6)', width: 1, dash: 'dot' }
+      line: { color: 'rgba(251, 191, 36, 0.6)', width: 2, dash: 'dot' }
     })) : []
 
-    const lapAnnotations = showLaps ? lapMarkers.map(lap => ({
+    // Create annotations for lap labels
+    const lapAnnotations = showLapLines ? lapMarkers.map(lap => ({
       x: lap.distance,
       y: 1,
       yref: 'paper',
       text: lap.name,
       showarrow: false,
-      font: { size: 9, color: 'rgba(255, 255, 255, 0.8)' },
+      font: { size: 10, color: 'rgba(251, 191, 36, 0.9)' },
       textangle: -90,
       xanchor: 'left',
       yanchor: 'top',
       xshift: 3
     })) : []
 
-    // Common layout properties shared across all modes
-    // datarevision forces Plotly to re-apply axis ranges when it changes
-    const base = {
+    // Reference lines for start and max elevation
+    const refShapes = []
+    const refAnnotations = []
+    if (showRefLines && sim && !sim.emptyRange && data) {
+      // Get start elevation (at range start)
+      const startElev = data.ele[sim.sIdx]
+
+      // Get max virtual elevation within range
+      let maxVElev = -Infinity
+      for (let i = sim.sIdx; i < sim.eIdx; i++) {
+        if (sim.vEle[i] > maxVElev) maxVElev = sim.vEle[i]
+      }
+
+      // Start elevation line (green dashed)
+      refShapes.push({
+        type: 'line',
+        x0: distanceRange[0],
+        x1: distanceRange[1],
+        y0: startElev,
+        y1: startElev,
+        yref: 'y',
+        line: { color: 'rgba(34, 197, 94, 0.7)', width: 1.5, dash: 'dash' }
+      })
+      refAnnotations.push({
+        x: distanceRange[0],
+        y: startElev,
+        yref: 'y',
+        text: `Start: ${startElev.toFixed(1)}m`,
+        showarrow: false,
+        font: { size: 9, color: 'rgba(34, 197, 94, 0.9)' },
+        xanchor: 'left',
+        yanchor: 'bottom',
+        bgcolor: 'rgba(15, 23, 42, 0.8)',
+        borderpad: 2
+      })
+
+      // Max virtual elevation line (cyan dashed)
+      if (maxVElev > -Infinity) {
+        refShapes.push({
+          type: 'line',
+          x0: distanceRange[0],
+          x1: distanceRange[1],
+          y0: maxVElev,
+          y1: maxVElev,
+          yref: 'y',
+          line: { color: 'rgba(6, 182, 212, 0.7)', width: 1.5, dash: 'dash' }
+        })
+        refAnnotations.push({
+          x: distanceRange[1],
+          y: maxVElev,
+          yref: 'y',
+          text: `Max: ${maxVElev.toFixed(1)}m`,
+          showarrow: false,
+          font: { size: 9, color: 'rgba(6, 182, 212, 0.9)' },
+          xanchor: 'right',
+          yanchor: 'bottom',
+          bgcolor: 'rgba(15, 23, 42, 0.8)',
+          borderpad: 2
+        })
+      }
+    }
+
+    const dualMode = method === 'shen' || method === 'climb'
+    const xRange = dualMode
+      ? [
+          Math.min(
+            data ? distanceRange[0] : Infinity,
+            data2 ? distanceRange2[0] : Infinity
+          ),
+          Math.max(
+            data ? distanceRange[1] : -Infinity,
+            data2 ? distanceRange2[1] : -Infinity
+          )
+        ]
+      : distanceRange
+
+    const resolvedXRange = Number.isFinite(xRange[0]) && Number.isFinite(xRange[1]) && xRange[1] > xRange[0]
+      ? xRange
+      : distanceRange
+
+    return {
       autosize: true,
-      datarevision: plotRevision,
       paper_bgcolor: '#0f172a',
       plot_bgcolor: '#0f172a',
       font: { color: '#94a3b8', size: 11 },
       margin: { t: 50, l: 50, r: 20, b: 40 },
+      grid: { rows: 3, columns: 1, pattern: 'independent' },
       showlegend: true,
       legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
       hovermode: 'x',
-      shapes: lapShapes,
-      annotations: lapAnnotations,
-    }
-
-    // Common xaxis with rangeslider
-    const xaxisBase = {
-      title: 'Distance (m)',
-      gridcolor: '#1e293b',
-      range: distanceRange,
-      showspikes: true,
-      spikemode: 'across',
-      spikethickness: 1,
-      spikecolor: '#6366f1',
-      spikedash: 'solid',
-      rangeslider: {
-        visible: true,
-        thickness: 0.08,
-        bgcolor: '#1e293b',
-        bordercolor: '#334155',
-        borderwidth: 1
-      }
-    }
-
-    // Y-axis config helper: sets explicit range for autoscaling to cropped data
-    const yAxisConfig = (rangeData) => {
-      if (rangeData) {
-        return { range: rangeData, autorange: false }
-      }
-      return { autorange: true }
-    }
-
-    if (is2Panel) {
-      // Shen/Climb: 2-panel layout (elevation + error), no power panel
-      return {
-        ...base,
-        grid: { rows: 2, columns: 1, pattern: 'independent' },
-        xaxis: { ...xaxisBase, anchor: 'y2' },
-        yaxis: {
-          title: 'Elevation (m)',
-          gridcolor: '#1e293b',
-          domain: [0.52, 1],
-          ...yAxisConfig(visibleYRange?.elevation)
-        },
-        yaxis2: {
-          title: 'Error (m)',
-          gridcolor: '#1e293b',
-          domain: [0.08, 0.45],
-          ...yAxisConfig(visibleYRange?.error)
-        },
-      }
-    }
-
-    // Chung/Sweep: 3-panel layout (elevation + error + power)
-    return {
-      ...base,
-      grid: { rows: 3, columns: 1, pattern: 'independent' },
-      xaxis: { ...xaxisBase, anchor: 'y3' },
+      xaxis: {
+        title: 'Distance (m)',
+        gridcolor: '#1e293b',
+        anchor: 'y3',
+        range: resolvedXRange,
+        showspikes: true,
+        spikemode: 'across',
+        spikethickness: 1,
+        spikecolor: '#6366f1',
+        spikedash: 'solid',
+        rangeslider: {
+          visible: true,
+          thickness: 0.08,
+          bgcolor: '#1e293b',
+          bordercolor: '#334155',
+          borderwidth: 1
+        }
+      },
       yaxis: {
         title: 'Elevation (m)',
         gridcolor: '#1e293b',
         domain: [0.55, 1],
-        ...yAxisConfig(visibleYRange?.elevation)
+        ...(visibleYRange?.elevation && { range: visibleYRange.elevation })
       },
       yaxis2: {
         title: 'Error (m)',
         gridcolor: '#1e293b',
+        anchor: 'x',
         domain: [0.30, 0.50],
-        ...yAxisConfig(visibleYRange?.error)
+        ...(visibleYRange?.error && { range: visibleYRange.error })
       },
       yaxis3: {
         title: 'Power (W)',
         gridcolor: '#1e293b',
+        anchor: 'x',
         domain: [0.08, 0.26],
-        ...yAxisConfig(visibleYRange?.power)
+        ...(visibleYRange?.power && { range: visibleYRange.power })
       },
+      shapes: [...lapShapes, ...refShapes],
+      annotations: [...lapAnnotations, ...refAnnotations]
     }
-  }, [distanceRange, visibleYRange, lapMarkers, showLaps, method, plotRevision])
+  }, [distanceRange, distanceRange2, visibleYRange, lapMarkers, showLapLines, showRefLines, sim, data, data2, method])
 
   if (!user) {
     return (
@@ -797,7 +930,7 @@ export const QuickTestTab = ({ presetsHook }) => {
           </div>
           <h2 className="text-xl font-bold text-white mb-2">Quick Test</h2>
           <p className="text-gray-400 mb-6">
-            Analyze a single GPX/FIT file to calculate your CdA and Crr values. Create an account to get started.
+            Analyze a GPX/FIT file to calculate your CdA and Crr values. Create an account to get started.
           </p>
           <p className="text-sm text-gray-500">
             Sign in from the Dashboard to use this feature.
@@ -1003,8 +1136,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                 min="30"
                 max="200"
                 value={mass}
-                onChange={e => setMass(safeNum(e.target.value, mass))}
-                onBlur={e => setMass(Math.max(30, Math.min(200, safeNum(e.target.value, mass))))}
+                onChange={e => {
+                  const val = safeNum(e.target.value, mass)
+                  setMass(Math.max(30, Math.min(200, val)))
+                }}
                 className="input-dark w-full"
               />
             </div>
@@ -1016,8 +1151,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                 min="0.9"
                 max="1"
                 value={eff}
-                onChange={e => setEff(safeNum(e.target.value, eff))}
-                onBlur={e => setEff(Math.max(0.9, Math.min(1, safeNum(e.target.value, eff))))}
+                onChange={e => {
+                  const val = safeNum(e.target.value, eff)
+                  setEff(Math.max(0.9, Math.min(1, val)))
+                }}
                 className="input-dark w-full"
               />
             </div>
@@ -1222,64 +1359,144 @@ export const QuickTestTab = ({ presetsHook }) => {
             {/* CdA/Crr Sliders */}
             <div className="space-y-3 mb-3">
               <div>
-                <div className="flex justify-between items-center text-xs mb-1">
+                <div className="flex justify-between text-xs mb-1">
                   <span className="text-green-400 font-medium">CdA</span>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={cdaNudge}
-                      onChange={e => setCdaNudge(parseFloat(e.target.value))}
-                      className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-400"
-                      title="Nudge amount"
-                    >
-                      <option value="0.01">±0.01</option>
-                      <option value="0.001">±0.001</option>
-                      <option value="0.0001">±0.0001</option>
-                    </select>
-                    <span className="font-mono font-bold">{cda.toFixed(4)}</span>
-                  </div>
+                  <span className="font-mono font-bold">{cda.toFixed(4)}</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => setCda(Math.max(0.15, cda - cdaNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
+                    title={`-${cdaNudge}`}
                   >−</button>
                   <input type="range" min="0.15" max="0.5" step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
                   <button
                     onClick={() => setCda(Math.min(0.5, cda + cdaNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
+                    title={`+${cdaNudge}`}
                   >+</button>
+                </div>
+                <div className="flex items-center gap-1 mt-1">
+                  <span className="text-xxs text-gray-500">Nudge:</span>
+                  <select
+                    value={cdaNudge}
+                    onChange={e => setCdaNudge(parseFloat(e.target.value))}
+                    className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-300"
+                  >
+                    <option value={0.0001}>0.0001</option>
+                    <option value={0.0005}>0.0005</option>
+                    <option value={0.001}>0.001</option>
+                    <option value={0.005}>0.005</option>
+                    <option value={0.01}>0.01</option>
+                  </select>
                 </div>
               </div>
               <div>
-                <div className="flex justify-between items-center text-xs mb-1">
+                <div className="flex justify-between text-xs mb-1">
                   <span className="text-blue-400 font-medium">Crr</span>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={crrNudge}
-                      onChange={e => setCrrNudge(parseFloat(e.target.value))}
-                      className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-400"
-                      title="Nudge amount"
-                    >
-                      <option value="0.001">±0.001</option>
-                      <option value="0.0001">±0.0001</option>
-                      <option value="0.00001">±0.00001</option>
-                    </select>
-                    <span className="font-mono font-bold">{crr.toFixed(6)}</span>
-                  </div>
+                  <span className="font-mono font-bold">{crr.toFixed(5)}</span>
                 </div>
                 <div className="flex items-center gap-1">
                   <button
                     onClick={() => setCrr(Math.max(0.002, crr - crrNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
+                    title={`-${crrNudge}`}
                   >−</button>
-                  <input type="range" min="0.002" max="0.02" step="0.00001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
+                  <input type="range" min="0.002" max="0.02" step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
                   <button
                     onClick={() => setCrr(Math.min(0.02, crr + crrNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
+                    title={`+${crrNudge}`}
                   >+</button>
+                </div>
+                <div className="flex items-center gap-1 mt-1">
+                  <span className="text-xxs text-gray-500">Nudge:</span>
+                  <select
+                    value={crrNudge}
+                    onChange={e => setCrrNudge(parseFloat(e.target.value))}
+                    className="text-xxs bg-dark-input border border-dark-border rounded px-1 py-0.5 text-gray-300"
+                  >
+                    <option value={0.00001}>0.00001</option>
+                    <option value={0.00005}>0.00005</option>
+                    <option value={0.0001}>0.0001</option>
+                    <option value={0.0005}>0.0005</option>
+                    <option value={0.001}>0.001</option>
+                  </select>
                 </div>
               </div>
             </div>
+
+            {/* Railing Warning */}
+            {isRailing && (
+              <div className="mb-3 p-2 bg-yellow-900/30 border border-yellow-500/50 rounded text-xs">
+                <div className="flex items-center gap-2 text-yellow-400 font-medium mb-1">
+                  <span>⚠️ Solution at bounds</span>
+                </div>
+                <div className="text-yellow-300/80 text-xxs space-y-0.5">
+                  {railingDetails?.cdaAtLowerBound && <div>CdA at minimum ({cdaMin})</div>}
+                  {railingDetails?.cdaAtUpperBound && <div>CdA at maximum ({cdaMax})</div>}
+                  {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({crrMin})</div>}
+                  {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({crrMax})</div>}
+                </div>
+                <div className="text-gray-400 text-xxs mt-1">
+                  Try adjusting bounds below or use Shen/Climb method
+                </div>
+              </div>
+            )}
+
+            {/* Solver Bounds */}
+            <details className="mb-3">
+              <summary className="text-xxs text-gray-500 cursor-pointer hover:text-gray-300">Solver Bounds</summary>
+              <div className="mt-2 p-2 bg-dark-bg rounded border border-dark-border space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xxs text-green-400">CdA Min</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={cdaMin}
+                      onChange={e => setCdaMin(parseFloat(e.target.value))}
+                      className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xxs text-green-400">CdA Max</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={cdaMax}
+                      onChange={e => setCdaMax(parseFloat(e.target.value))}
+                      className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xxs text-blue-400">Crr Min</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      value={crrMin}
+                      onChange={e => setCrrMin(parseFloat(e.target.value))}
+                      className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xxs text-blue-400">Crr Max</label>
+                    <input
+                      type="number"
+                      step="0.001"
+                      value={crrMax}
+                      onChange={e => setCrrMax(parseFloat(e.target.value))}
+                      className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
+                    />
+                  </div>
+                </div>
+                <div className="text-xxs text-gray-500">
+                  Tighter bounds can prevent degenerate solutions
+                </div>
+              </div>
+            </details>
 
             {/* Fit Quality Metrics */}
             {method === 'chung' && sim && !sim.emptyRange && (
@@ -1400,34 +1617,6 @@ export const QuickTestTab = ({ presetsHook }) => {
               </div>
             </div>
 
-            {/* Time Lag */}
-            {method === 'chung' ? (
-              <div>
-                <div className="flex justify-between text-xxs mb-1">
-                  <span className="text-orange-400">Time Lag</span>
-                  <span className="text-gray-400">{offset}s</span>
-                </div>
-                <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className="slider-lag" />
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <div>
-                  <div className="flex justify-between text-xxs mb-1">
-                    <span className={method === 'shen' ? 'text-amber-400' : 'text-cyan-400'}>{method === 'shen' ? 'Slow' : 'Low'} Lag</span>
-                    <span className="text-gray-400">{offset}s</span>
-                  </div>
-                  <input type="range" min="-5" max="5" step="0.5" value={offset} onChange={e => setOffset(parseFloat(e.target.value))} className={`w-full ${method === 'shen' ? 'accent-amber-500' : 'accent-cyan-500'}`} />
-                </div>
-                <div>
-                  <div className="flex justify-between text-xxs mb-1">
-                    <span className={method === 'shen' ? 'text-orange-400' : 'text-yellow-400'}>{method === 'shen' ? 'Fast' : 'High'} Lag</span>
-                    <span className="text-gray-400">{offset2}s</span>
-                  </div>
-                  <input type="range" min="-5" max="5" step="0.5" value={offset2} onChange={e => setOffset2(parseFloat(e.target.value))} className={`w-full ${method === 'shen' ? 'accent-orange-500' : 'accent-yellow-500'}`} />
-                </div>
-              </div>
-            )}
-
             {/* Low-pass Filter */}
             <div className="mt-3 pt-3 border-t border-dark-border">
               <div className="flex items-center justify-between mb-2">
@@ -1458,34 +1647,34 @@ export const QuickTestTab = ({ presetsHook }) => {
           <div className="px-6 py-2 border-b border-dark-border bg-dark-card/50">
             {method === 'chung' || method === 'sweep' ? (
               /* Single file mode controls (Chung/Sweep) */
-              <div className="flex items-center gap-6">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
                   <span className="text-xs text-gray-400">Range:</span>
-                  {/* Start nudge - 1 data point per click */}
+                  {/* Start nudge buttons */}
                   <div className="flex items-center">
                     <button
-                      onClick={() => nudgeRange('start', -1)}
+                      onClick={() => setRange([Math.max(0, range[0] - 1), range[1]])}
                       className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
-                      title="Move start back 1 point"
+                      title="Move start back"
                     >◀</button>
                     <button
-                      onClick={() => nudgeRange('start', 1)}
-                      className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border border-l-0 border-dark-border hover:bg-dark-input"
-                      title="Move start forward 1 point"
+                      onClick={() => setRange([Math.min(range[1] - 1, range[0] + 1), range[1]])}
+                      className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
+                      title="Move start forward"
                     >▶</button>
                   </div>
                   <span className={`text-xs font-mono ${method === 'sweep' ? 'text-violet-400' : 'text-brand-accent'}`}>{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
-                  {/* End nudge - 1 data point per click */}
+                  {/* End nudge buttons */}
                   <div className="flex items-center">
                     <button
-                      onClick={() => nudgeRange('end', -1)}
+                      onClick={() => setRange([range[0], Math.max(range[0] + 1, range[1] - 1)])}
                       className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
-                      title="Move end back 1 point"
+                      title="Move end back"
                     >◀</button>
                     <button
-                      onClick={() => nudgeRange('end', 1)}
-                      className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border border-l-0 border-dark-border hover:bg-dark-input"
-                      title="Move end forward 1 point"
+                      onClick={() => setRange([range[0], Math.min(100, range[1] + 1)])}
+                      className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
+                      title="Move end forward"
                     >▶</button>
                   </div>
                   <button
@@ -1496,24 +1685,121 @@ export const QuickTestTab = ({ presetsHook }) => {
                     Reset
                   </button>
                   <button
-                    onClick={rescaleChart}
-                    className="text-xxs text-gray-500 hover:text-white px-1.5 py-0.5 rounded border border-dark-border hover:bg-dark-input"
-                    title="Rescale Y axes to fit data"
+                    onClick={() => setAutoScaleY(!autoScaleY)}
+                    className={`text-xs font-semibold px-2 py-1 rounded border transition-colors ${
+                      autoScaleY
+                        ? 'bg-indigo-600/30 border-indigo-400 text-indigo-200'
+                        : 'border-indigo-500/40 text-indigo-300 hover:bg-indigo-900/40'
+                    }`}
+                    title="Auto-scale Y axis to visible data"
                   >
-                    Rescale Y
+                    Autoscale Y: {autoScaleY ? 'On' : 'Off'}
                   </button>
-                  {lapMarkers.length > 0 && (
-                    <button
-                      onClick={() => setShowLaps(!showLaps)}
-                      className={`text-xxs px-1.5 py-0.5 rounded border ${showLaps ? 'bg-white/10 border-white/30 text-white' : 'border-dark-border text-gray-500 hover:text-white hover:bg-dark-input'}`}
-                      title="Show/hide lap markers"
-                    >
-                      Laps ({lapMarkers.length})
-                    </button>
-                  )}
+                  <button
+                    onClick={() => setShowRefLines(!showRefLines)}
+                    className={`text-xs font-semibold px-2 py-1 rounded border transition-colors ${
+                      showRefLines
+                        ? 'bg-emerald-600/30 border-emerald-400 text-emerald-200'
+                        : 'border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/40'
+                    }`}
+                    title="Show start/max elevation reference lines"
+                  >
+                    Ref Lines: {showRefLines ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    onClick={() => setShowLapLines(!showLapLines)}
+                    disabled={lapMarkers.length === 0}
+                    className={`text-xs font-semibold px-2 py-1 rounded border transition-colors ${
+                      lapMarkers.length === 0
+                        ? 'border-gray-700 text-gray-600 cursor-not-allowed'
+                        : showLapLines
+                          ? 'bg-amber-600/30 border-amber-400 text-amber-200'
+                          : 'border-amber-500/40 text-amber-300 hover:bg-amber-900/40'
+                    }`}
+                    title={lapMarkers.length > 0 ? 'Show/hide lap marker lines and labels' : 'No lap markers in this file'}
+                  >
+                    Lap Lines: {showLapLines ? 'On' : 'Off'}
+                  </button>
                 </div>
+                {/* Lap cropping controls */}
+                {lapMarkers.length > 0 && data && (() => {
+                  const maxDist = data.dist[data.dist.length - 1]
+                  const currentStartDist = distanceRange[0]
+                  const currentEndDist = distanceRange[1]
+
+                  // Find which lap index corresponds to current start/end
+                  // Small tolerance for floating point precision
+                  const tolerance = 0.1 // 0.1 meters
+
+                  // Start: find the last lap that is at or before currentStartDist
+                  let currentStartLapIdx = -1 // -1 means "Start"
+                  for (let i = 0; i < lapMarkers.length; i++) {
+                    if (lapMarkers[i].distance <= currentStartDist + tolerance) {
+                      currentStartLapIdx = i
+                    }
+                  }
+
+                  // End: find the first lap that is at or after currentEndDist, or -1 for "End"
+                  let currentEndLapIdx = -1 // -1 means "End"
+                  for (let i = lapMarkers.length - 1; i >= 0; i--) {
+                    if (lapMarkers[i].distance >= currentEndDist - tolerance) {
+                      currentEndLapIdx = i
+                    }
+                  }
+
+                  return (
+                    <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
+                      <span className="text-xs text-amber-400">Lap Crop:</span>
+                      <select
+                        className="text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-0.5 text-gray-300"
+                        value={currentStartLapIdx}
+                        onChange={(e) => {
+                          const lapIdx = parseInt(e.target.value)
+                          if (lapIdx === -1) {
+                            applyDistanceCrop(0, currentEndDist)
+                          } else {
+                            const lapDist = lapMarkers[lapIdx].distance
+                            applyDistanceCrop(lapDist, currentEndDist)
+                          }
+                        }}
+                        title="Crop start to lap"
+                      >
+                        <option value={-1}>Start</option>
+                        {lapMarkers.map((lap, idx) => (
+                          // Only show laps before the current end lap
+                          (currentEndLapIdx === -1 || idx < currentEndLapIdx) && (
+                            <option key={idx} value={idx}>{lap.name}</option>
+                          )
+                        ))}
+                      </select>
+                      <span className="text-xxs text-gray-500">to</span>
+                      <select
+                        className="text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-0.5 text-gray-300"
+                        value={currentEndLapIdx}
+                        onChange={(e) => {
+                          const lapIdx = parseInt(e.target.value)
+                          if (lapIdx === -1) {
+                            applyDistanceCrop(currentStartDist, maxDist)
+                          } else {
+                            const lapDist = lapMarkers[lapIdx].distance
+                            applyDistanceCrop(currentStartDist, lapDist)
+                          }
+                        }}
+                        title="Crop end to lap"
+                      >
+                        {lapMarkers.map((lap, idx) => (
+                          // Only show laps after the current start lap
+                          idx > currentStartLapIdx && (
+                            <option key={idx} value={idx}>{lap.name}</option>
+                          )
+                        ))}
+                        <option value={-1}>End</option>
+                      </select>
+                    </div>
+                  )
+                })()}
                 {method === 'sweep' && sweepResults && (
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
                     <span className="text-xxs px-2 py-0.5 rounded bg-violet-900/50 text-violet-400 border border-violet-500/30">
                       {(sweepResults.cdaValues.length * sweepResults.crrValues.length).toLocaleString()} solutions
                     </span>
@@ -1524,7 +1810,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                   </div>
                 )}
                 {(filterGps || filterVirtual) && (
-                  <span className="text-xxs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30">
+                  <span className="text-xxs px-2 py-1 rounded bg-emerald-900/50 text-emerald-300 border border-emerald-500/30">
                     Filtered
                   </span>
                 )}
@@ -1534,7 +1820,7 @@ export const QuickTestTab = ({ presetsHook }) => {
               <div className="space-y-2">
                 {/* Slow accel file controls */}
                 {data && (
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
                     <span className="text-xs font-bold text-amber-400 uppercase tracking-wider w-24">Slow Accel</span>
                     <span className="text-xxs font-mono text-amber-400">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
                     {sim && !sim.emptyRange && (
@@ -1550,7 +1836,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                 )}
                 {/* Fast accel file controls */}
                 {data2 && (
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
                     <span className="text-xs font-bold text-orange-400 uppercase tracking-wider w-24">Fast Accel</span>
                     <span className="text-xxs font-mono text-orange-400">{Math.round(distanceRange2[0])}m - {Math.round(distanceRange2[1])}m</span>
                     {sim2 && !sim2.emptyRange && (
@@ -1599,7 +1885,7 @@ export const QuickTestTab = ({ presetsHook }) => {
               <div className="space-y-2">
                 {/* Low speed file controls */}
                 {data && (
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
                     <span className="text-xs font-bold text-cyan-400 uppercase tracking-wider w-24">Low Speed</span>
                     <span className="text-xxs font-mono text-cyan-400">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
                     {sim && !sim.emptyRange && (
@@ -1615,7 +1901,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                 )}
                 {/* High speed file controls */}
                 {data2 && (
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-2 px-2 py-1.5 rounded-lg border border-dark-border bg-dark-bg/70">
                     <span className="text-xs font-bold text-yellow-400 uppercase tracking-wider w-24">High Speed</span>
                     <span className="text-xxs font-mono text-yellow-400">{Math.round(distanceRange2[0])}m - {Math.round(distanceRange2[1])}m</span>
                     {sim2 && !sim2.emptyRange && (
@@ -1755,7 +2041,6 @@ export const QuickTestTab = ({ presetsHook }) => {
                     })()}
                     layout={{
                       autosize: true,
-                      datarevision: plotRevision,
                       paper_bgcolor: '#0f172a',
                       plot_bgcolor: '#0f172a',
                       font: { color: '#94a3b8', size: 11 },
@@ -1764,24 +2049,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                       showlegend: true,
                       legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
                       xaxis: { title: 'Distance (m)', gridcolor: '#1e293b', range: distanceRange },
-                      yaxis: {
-                        title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.35, 1],
-                        ...(visibleYRange?.elevation
-                          ? { range: visibleYRange.elevation, autorange: false }
-                          : { autorange: true })
-                      },
-                      yaxis2: {
-                        title: 'Error (m)', gridcolor: '#1e293b', domain: [0, 0.28],
-                        ...(visibleYRange?.error
-                          ? { range: visibleYRange.error, autorange: false }
-                          : { autorange: true })
-                      }
+                      yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.35, 1] },
+                      yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', anchor: 'x', domain: [0, 0.28] }
                     }}
-                    revision={plotRevision}
                     onRelayout={handleRelayout}
                     useResizeHandler={true}
                     style={{ width: '100%', height: '100%' }}
-                    config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
+                    config={{ displayModeBar: true, responsive: true, doubleClick: 'reset', modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
                   />
                 </div>
               </div>
@@ -1801,11 +2075,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                   ]
                 })()}
                 layout={layout}
-                revision={plotRevision}
                 onRelayout={handleRelayout}
                 useResizeHandler={true}
                 style={{ width: '100%', height: '100%' }}
-                config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
+                config={{ displayModeBar: true, responsive: true, doubleClick: 'reset', modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
               />
             ) : method === 'shen' ? (
               /* Shen mode chart - show both acceleration files */
@@ -1838,12 +2111,16 @@ export const QuickTestTab = ({ presetsHook }) => {
 
                   return traces
                 })()}
-                layout={layout}
-                revision={plotRevision}
+                layout={{
+                  ...layout,
+                  grid: { rows: 2, columns: 1, pattern: 'independent' },
+                  yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.52, 1] },
+                  yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', anchor: 'x', domain: [0.08, 0.45] },
+                }}
                 onRelayout={handleRelayout}
                 useResizeHandler={true}
                 style={{ width: '100%', height: '100%' }}
-                config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
+                config={{ displayModeBar: true, responsive: true, doubleClick: 'reset', modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
               />
             ) : (
               /* Climb mode chart - show both files with rangeslider */
@@ -1876,12 +2153,16 @@ export const QuickTestTab = ({ presetsHook }) => {
 
                   return traces
                 })()}
-                layout={layout}
-                revision={plotRevision}
+                layout={{
+                  ...layout,
+                  grid: { rows: 2, columns: 1, pattern: 'independent' },
+                  yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.52, 1] },
+                  yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', anchor: 'x', domain: [0.08, 0.45] },
+                }}
                 onRelayout={handleRelayout}
                 useResizeHandler={true}
                 style={{ width: '100%', height: '100%' }}
-                config={{ displayModeBar: true, responsive: true, modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
+                config={{ displayModeBar: true, responsive: true, doubleClick: 'reset', modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d'] }}
               />
             )
           ) : (
@@ -1913,37 +2194,13 @@ export const QuickTestTab = ({ presetsHook }) => {
         />
       )}
 
-      {/* Smart Recording Warning Modal */}
-      {smartRecordingWarning && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-dark-card border border-dark-border rounded-xl p-6 max-w-md mx-4">
-            <div className="flex items-start gap-4">
-              <div className="flex-shrink-0 w-10 h-10 bg-amber-500/20 rounded-full flex items-center justify-center">
-                <svg className="w-5 h-5 text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-white mb-2">Smart Recording Detected</h3>
-                <p className="text-sm text-gray-400 mb-3">
-                  The file <span className="text-white font-medium">{smartRecordingWarning.fileName}</span> appears to use smart recording (avg interval: {smartRecordingWarning.avgInterval}s) instead of 1-second recording.
-                </p>
-                <p className="text-sm text-gray-400 mb-4">
-                  For accurate CdA/Crr results, set your head unit to record at <strong className="text-white">1-second intervals</strong>. Smart recording creates gaps in the data that can affect analysis accuracy.
-                </p>
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => setSmartRecordingWarning(null)}
-                    className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-sm font-medium transition-colors"
-                  >
-                    I Understand
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <AlertDialog
+        isOpen={errorDialog.open}
+        onClose={() => setErrorDialog({ open: false, message: '' })}
+        title="Error"
+        message={errorDialog.message}
+        variant="error"
+      />
     </div>
   )
 }

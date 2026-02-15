@@ -1,7 +1,13 @@
 import { useEffect, useCallback } from 'react'
 
 // Base Dialog component
-export const Dialog = ({ isOpen, onClose, children }) => {
+export const Dialog = ({
+  isOpen,
+  onClose,
+  children,
+  panelClassName = '',
+  closeOnBackdrop = true
+}) => {
   // Handle escape key
   const handleEscape = useCallback((e) => {
     if (e.key === 'Escape' && onClose) {
@@ -23,14 +29,14 @@ export const Dialog = ({ isOpen, onClose, children }) => {
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/60 backdrop-blur-sm"
-        onClick={onClose}
+        onClick={closeOnBackdrop ? onClose : undefined}
       />
       {/* Dialog */}
-      <div className="relative bg-dark-card rounded-xl border border-dark-border shadow-2xl max-w-md w-full mx-4 animate-in fade-in zoom-in-95 duration-200">
+      <div className={`relative bg-dark-card rounded-xl border border-dark-border shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200 ${panelClassName}`}>
         {children}
       </div>
     </div>

@@ -60,19 +60,8 @@ export const useStudies = () => {
 
     if (error) throw error
 
-    // For averaging studies, auto-create a default configuration
-    if (study.study_mode === 'averaging') {
-      await supabase
-        .from('study_variations')
-        .insert({
-          study_id: data.id,
-          user_id: user.id,
-          name: 'Baseline',
-          sort_order: 0
-        })
-    }
-
-    setStudies(prev => [{ ...data, variation_count: study.study_mode === 'averaging' ? 1 : 0 }, ...prev])
+    // DB trigger creates a baseline configuration for every new study.
+    setStudies(prev => [{ ...data, variation_count: 1 }, ...prev])
     return data
   }
 

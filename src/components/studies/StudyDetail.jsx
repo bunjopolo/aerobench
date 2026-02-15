@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { useStudy } from '../../hooks/useStudies'
 import { useVariations } from '../../hooks/useVariations'
-import { useRuns } from '../../hooks/useRuns'
-import { getVariableType, VARIABLE_TYPES } from '../../lib/variableTypes'
+import { getVariableType } from '../../lib/variableTypes'
 import { RunAnalysis } from './RunAnalysis'
 import { StudyResults } from './StudyResults'
-import { ConfirmDialog } from '../ui'
+import { ConfirmDialog, Dialog } from '../ui'
 import { SavePresetModal } from '../presets'
 
 const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onEdit, onDelete, onAnalyze, onSavePreset }) => {
@@ -155,118 +154,6 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
   )
 }
 
-// Simplified run card for averaging mode
-const RunCard = ({ run, onToggleValid, onDelete, onRename }) => {
-  const [isEditing, setIsEditing] = useState(false)
-  const [editName, setEditName] = useState(run.name || '')
-
-  const handleSave = () => {
-    if (editName.trim() && editName !== run.name) {
-      onRename(run.id, editName.trim())
-    }
-    setIsEditing(false)
-  }
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      handleSave()
-    } else if (e.key === 'Escape') {
-      setEditName(run.name || '')
-      setIsEditing(false)
-    }
-  }
-
-  return (
-    <div className={`bg-dark-card rounded-lg border p-4 ${
-      run.is_valid ? 'border-dark-border' : 'border-red-500/30 opacity-60'
-    }`}>
-      <div className="flex items-center justify-between">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            {isEditing ? (
-              <input
-                type="text"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                onBlur={handleSave}
-                onKeyDown={handleKeyDown}
-                className="input-dark text-sm py-1 px-2 w-48"
-                autoFocus
-              />
-            ) : (
-              <button
-                onClick={() => setIsEditing(true)}
-                className="font-medium text-white truncate hover:text-brand-primary transition-colors text-left"
-                title="Click to rename"
-              >
-                {run.name || 'Untitled Run'}
-              </button>
-            )}
-            {!run.is_valid && (
-              <span className="text-xxs px-2 py-0.5 rounded bg-red-500/20 text-red-400">
-                Excluded
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-2 mt-1">
-            {run.gpx_filename && (
-              <p className="text-xxs text-gray-500 truncate max-w-[200px]" title={run.gpx_filename}>
-                {run.gpx_filename}
-              </p>
-            )}
-            <span className="text-xxs text-gray-600">•</span>
-            <p className="text-xxs text-gray-500">
-              {run.ride_date ? new Date(run.ride_date).toLocaleDateString() : 'No date'}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4">
-          {/* Stats */}
-          <div className="text-right">
-            <div className="text-sm font-mono">
-              <span className="text-green-400">{run.fitted_cda?.toFixed(4) || '—'}</span>
-              <span className="text-gray-600 mx-1">/</span>
-              <span className="text-blue-400">{run.fitted_crr?.toFixed(5) || '—'}</span>
-            </div>
-            <div className="text-xxs text-gray-500">CdA / Crr</div>
-          </div>
-
-          {/* Actions */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={onToggleValid}
-              className={`p-1.5 rounded hover:bg-dark-bg transition-colors ${
-                run.is_valid ? 'text-green-400' : 'text-red-400'
-              }`}
-              title={run.is_valid ? 'Exclude from average' : 'Include in average'}
-            >
-              {run.is_valid ? (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                </svg>
-              ) : (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              )}
-            </button>
-            <button
-              onClick={onDelete}
-              className="p-1.5 text-gray-500 hover:text-red-400 rounded hover:bg-dark-bg transition-colors"
-              title="Delete run"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate }) => {
   const [form, setForm] = useState({
     name: '',
@@ -356,8 +243,7 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-md animate-fade-in">
+    <Dialog isOpen={true} onClose={loading ? undefined : onClose}>
         <div className="p-6 border-b border-dark-border">
           <h2 className="text-xl font-bold text-white">Add Configuration</h2>
           <p className="text-gray-400 text-sm mt-1">Add a new {customLabel || variableType.label.toLowerCase()} configuration to test</p>
@@ -419,8 +305,7 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   )
 }
 
@@ -513,8 +398,7 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-md animate-fade-in">
+    <Dialog isOpen={true} onClose={loading ? undefined : onClose}>
         <div className="p-6 border-b border-dark-border">
           <h2 className="text-xl font-bold text-white">Edit Configuration</h2>
           <p className="text-gray-400 text-sm mt-1">Update {customLabel || variableType.label.toLowerCase()} configuration details</p>
@@ -576,173 +460,7 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
             </button>
           </div>
         </form>
-      </div>
-    </div>
-  )
-}
-
-// Averaging mode view - simplified, no configurations
-const AveragingStudyView = ({ study, variation, onBack, onDelete, onAnalyze }) => {
-  const { runs, stats, toggleValid, deleteRun, updateRun, refresh } = useRuns(variation?.id)
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
-  const [showAnalysis, setShowAnalysis] = useState(false)
-  const [deleteRunDialog, setDeleteRunDialog] = useState({ open: false, runId: null, runName: '' })
-
-  if (showAnalysis) {
-    return (
-      <RunAnalysis
-        variation={variation}
-        study={study}
-        onBack={() => {
-          setShowAnalysis(false)
-          refresh()
-        }}
-      />
-    )
-  }
-
-  const handleDeleteRun = (runId, runName) => {
-    setDeleteRunDialog({ open: true, runId, runName })
-  }
-
-  const confirmDeleteRun = async () => {
-    if (deleteRunDialog.runId) {
-      await deleteRun(deleteRunDialog.runId)
-      setDeleteRunDialog({ open: false, runId: null, runName: '' })
-    }
-  }
-
-  const handleRenameRun = async (runId, newName) => {
-    await updateRun(runId, { name: newName })
-  }
-
-  return (
-    <div className="p-6 max-w-4xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
-        <button onClick={onBack} className="text-gray-400 hover:text-white">
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <div className="flex-1">
-          <h2 className="text-2xl font-bold text-white">{study.name}</h2>
-          <div className="flex items-center gap-3 text-sm text-gray-400 mt-1">
-            <span className="bg-dark-bg px-2 py-0.5 rounded">Averaging</span>
-            <span>{study.mass}kg</span>
-          </div>
-        </div>
-        <button
-          onClick={() => setShowDeleteConfirm(true)}
-          className="btn-secondary text-red-400 hover:bg-red-900/20"
-        >
-          Delete
-        </button>
-      </div>
-
-      {study.description && (
-        <p className="text-gray-400 mb-6">{study.description}</p>
-      )}
-
-      {/* Stats Summary */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Avg CdA</div>
-          <div className="text-2xl font-mono font-bold text-green-400">
-            {stats.avgCda?.toFixed(4) || '—'}
-          </div>
-          {stats.stdCda && (
-            <div className="text-xs text-gray-500 font-mono">±{stats.stdCda.toFixed(4)}</div>
-          )}
-        </div>
-        <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Avg Crr</div>
-          <div className="text-2xl font-mono font-bold text-blue-400">
-            {stats.avgCrr?.toFixed(5) || '—'}
-          </div>
-        </div>
-        <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Valid Runs</div>
-          <div className="text-2xl font-bold text-white">
-            {stats.count}
-            {stats.totalCount > stats.count && (
-              <span className="text-sm text-gray-500 font-normal">/{stats.totalCount}</span>
-            )}
-          </div>
-        </div>
-        <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Avg Fit Quality</div>
-          <div className="text-2xl font-bold text-amber-400">
-            {stats.avgR2 ? `${(stats.avgR2 * 100).toFixed(0)}%` : '—'}
-          </div>
-        </div>
-      </div>
-
-      {/* Add Run Button */}
-      <button
-        onClick={() => setShowAnalysis(true)}
-        className="w-full btn-primary py-3 mb-6 flex items-center justify-center gap-2"
-      >
-        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-        </svg>
-        Add Run
-      </button>
-
-      {/* Runs List */}
-      <div>
-        <h3 className="text-lg font-bold text-white mb-4">Runs ({runs.length})</h3>
-        {runs.length === 0 ? (
-          <div className="text-center py-8 bg-dark-card rounded-xl border border-dark-border">
-            <p className="text-gray-400">No runs yet. Add your first run to establish your baseline.</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {runs.map(run => (
-              <RunCard
-                key={run.id}
-                run={run}
-                onToggleValid={() => toggleValid(run.id)}
-                onDelete={() => handleDeleteRun(run.id, run.name)}
-                onRename={handleRenameRun}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Tip for new users */}
-      {runs.length > 0 && runs.length < 3 && (
-        <div className="mt-6 bg-blue-900/20 border border-blue-500/30 rounded-xl p-4">
-          <h4 className="text-blue-400 font-medium mb-1">Tip: Add more runs</h4>
-          <p className="text-sm text-gray-400">
-            3-5 runs gives you a more reliable average. More runs = more confidence in your baseline.
-          </p>
-        </div>
-      )}
-
-      {/* Delete Study Confirmation */}
-      <ConfirmDialog
-        isOpen={showDeleteConfirm}
-        onClose={() => setShowDeleteConfirm(false)}
-        onConfirm={onDelete}
-        title="Delete Study"
-        message={`This will permanently delete "${study.name}" and all its runs. This action cannot be undone.`}
-        confirmText="Delete"
-        variant="danger"
-      />
-
-      {/* Delete Run Confirmation */}
-      <ConfirmDialog
-        isOpen={deleteRunDialog.open}
-        onClose={() => setDeleteRunDialog({ open: false, runId: null, runName: '' })}
-        onConfirm={confirmDeleteRun}
-        title="Delete Run"
-        message={`Are you sure you want to delete "${deleteRunDialog.runName}"? This action cannot be undone.`}
-        confirmText="Delete"
-        variant="danger"
-      />
-    </div>
+    </Dialog>
   )
 }
 
@@ -774,19 +492,12 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
     )
   }
 
-  // For averaging mode, show simplified view
-  if (study.study_mode === 'averaging') {
-    return (
-      <AveragingStudyView
-        study={study}
-        variation={variations[0]}
-        onBack={onBack}
-        onDelete={onDelete}
-      />
-    )
-  }
-
   const variableType = getVariableType(study.variable_type)
+  const variableLabel = study.variable_label || variableType.label
+  const baselineVariation = variations.find(v => v.is_baseline) || variations[0] || null
+  const totalValidRuns = variations.reduce((sum, v) => sum + (v.run_count || 0), 0)
+  const totalRuns = variations.reduce((sum, v) => sum + (v.total_runs || 0), 0)
+  const variationsWithData = variations.filter(v => (v.run_count || 0) > 0).length
 
   // If analyzing a configuration, show the RunAnalysis component
   if (analyzingVariation) {
@@ -840,7 +551,7 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
         <div className="flex-1">
           <h2 className="text-2xl font-bold text-white">{study.name}</h2>
           <div className="flex items-center gap-3 text-sm text-gray-400 mt-1">
-            <span className="bg-dark-bg px-2 py-0.5 rounded">{variableType.label}</span>
+            <span className="bg-dark-bg px-2 py-0.5 rounded">{variableLabel}</span>
             <span>{study.mass}kg</span>
           </div>
         </div>
@@ -867,6 +578,54 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
 
       {study.description && (
         <p className="text-gray-400 mb-6">{study.description}</p>
+      )}
+
+      {baselineVariation && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
+            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Baseline CdA</div>
+            <div className="text-2xl font-mono font-bold text-green-400">
+              {baselineVariation.avg_cda?.toFixed(4) || '—'}
+            </div>
+          </div>
+          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
+            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Baseline Crr</div>
+            <div className="text-2xl font-mono font-bold text-blue-400">
+              {baselineVariation.avg_crr?.toFixed(5) || '—'}
+            </div>
+          </div>
+          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
+            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Valid Runs</div>
+            <div className="text-2xl font-bold text-white">
+              {totalValidRuns}
+              {totalRuns > totalValidRuns && (
+                <span className="text-sm text-gray-500 font-normal">/{totalRuns}</span>
+              )}
+            </div>
+          </div>
+          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
+            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Setups With Data</div>
+            <div className="text-2xl font-bold text-amber-400">
+              {variationsWithData}
+            </div>
+            {variations.length > 1 && (
+              <div className="text-xs text-gray-500 mt-1">
+                of {variations.length} configurations
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {baselineVariation && (
+        <div className="mb-6">
+          <button
+            onClick={() => setAnalyzingVariation(baselineVariation)}
+            className="btn-primary w-full md:w-auto"
+          >
+            + Add Run to {baselineVariation.name}
+          </button>
+        </div>
       )}
 
       {/* Configurations Section */}
@@ -908,9 +667,9 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
       {/* Quick Tips */}
       {variations.length > 0 && variations.length < 2 && (
         <div className="bg-blue-900/20 border border-blue-500/30 rounded-xl p-4">
-          <h4 className="text-blue-400 font-medium mb-2">Tip: Add more configurations</h4>
+          <h4 className="text-blue-400 font-medium mb-2">Tip: This baseline is ready</h4>
           <p className="text-sm text-gray-400">
-            Add at least 2 configurations to compare results. For best results, do 3-5 runs per configuration.
+            Add 3-5 runs for stability, then add another configuration when you want to compare setups.
           </p>
         </div>
       )}
@@ -965,7 +724,7 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
             cda: presetVariation.avg_cda,
             crr: presetVariation.avg_crr,
             mass: study.mass,
-            efficiency: study.efficiency,
+            efficiency: study.drivetrain_efficiency,
             rho: 1.225  // Default air density, studies don't store this
           }}
           onSave={presetsHook.createPreset}

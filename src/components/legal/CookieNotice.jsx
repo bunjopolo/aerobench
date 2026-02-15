@@ -1,15 +1,7 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
 export const CookieNotice = ({ onShowPrivacy }) => {
-  const [visible, setVisible] = useState(false)
-
-  useEffect(() => {
-    // Check if user has already accepted cookies
-    const accepted = localStorage.getItem('cookiesAccepted')
-    if (!accepted) {
-      setVisible(true)
-    }
-  }, [])
+  const [visible, setVisible] = useState(() => !localStorage.getItem('cookiesAccepted'))
 
   const acceptCookies = () => {
     localStorage.setItem('cookiesAccepted', 'true')

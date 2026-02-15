@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { VARIABLE_TYPES, getVariableTypeOptions } from '../../lib/variableTypes'
+import { Dialog } from '../ui'
 
 export const CreateStudyModal = ({ onClose, onCreate }) => {
   const [form, setForm] = useState({
     name: '',
     description: '',
-    study_mode: 'comparison',
     variable_type: 'tire_pressure',
     variable_label: '',
     mass: '80',
@@ -34,9 +34,8 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
       await onCreate({
         name: form.name.trim(),
         description: form.description.trim() || null,
-        study_mode: form.study_mode,
-        variable_type: form.study_mode === 'averaging' ? 'custom' : form.variable_type,
-        variable_label: form.study_mode === 'averaging' ? 'Baseline' : (form.variable_type === 'custom' ? form.variable_label.trim() : null),
+        variable_type: form.variable_type,
+        variable_label: form.variable_type === 'custom' ? form.variable_label.trim() : null,
         mass: parseFloat(form.mass),
         drivetrain_efficiency: parseFloat(form.drivetrain_efficiency)
       })
@@ -47,59 +46,15 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-lg animate-fade-in max-h-[90vh] overflow-y-auto">
+    <Dialog isOpen={true} onClose={loading ? undefined : onClose} panelClassName="max-w-lg">
         <div className="p-6 border-b border-dark-border">
           <h2 className="text-xl font-bold text-white">Create New Study</h2>
           <p className="text-gray-400 text-sm mt-1">
-            {form.study_mode === 'averaging'
-              ? 'Establish a baseline CdA/Crr from multiple runs'
-              : 'Compare different equipment or positions'}
+            Start with a baseline configuration, then add more setups to compare.
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {/* Study Mode Toggle */}
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-2">
-              Study Type
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setForm({ ...form, study_mode: 'averaging' })}
-                className={`p-4 rounded-lg border text-left transition-all ${
-                  form.study_mode === 'averaging'
-                    ? 'border-brand-primary bg-brand-primary/20'
-                    : 'border-dark-border bg-dark-bg hover:border-gray-600'
-                }`}
-              >
-                <div className={`font-medium mb-1 ${form.study_mode === 'averaging' ? 'text-white' : 'text-gray-300'}`}>
-                  Averaging
-                </div>
-                <p className="text-xs text-gray-500">
-                  Multiple runs to establish a stable baseline CdA/Crr
-                </p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setForm({ ...form, study_mode: 'comparison' })}
-                className={`p-4 rounded-lg border text-left transition-all ${
-                  form.study_mode === 'comparison'
-                    ? 'border-brand-primary bg-brand-primary/20'
-                    : 'border-dark-border bg-dark-bg hover:border-gray-600'
-                }`}
-              >
-                <div className={`font-medium mb-1 ${form.study_mode === 'comparison' ? 'text-white' : 'text-gray-300'}`}>
-                  Comparison
-                </div>
-                <p className="text-xs text-gray-500">
-                  Compare different equipment or positions
-                </p>
-              </button>
-            </div>
-          </div>
-
           {/* Study Name */}
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -114,47 +69,43 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
             />
           </div>
 
-          {/* Variable Type - only for comparison mode */}
-          {form.study_mode === 'comparison' && (
-            <>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  What are you testing?
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {variableTypes.map(type => (
-                    <button
-                      key={type.id}
-                      type="button"
-                      onClick={() => setForm({ ...form, variable_type: type.id })}
-                      className={`p-3 rounded-lg border text-center transition-all ${
-                        form.variable_type === type.id
-                          ? 'border-brand-primary bg-brand-primary/20 text-white'
-                          : 'border-dark-border bg-dark-bg text-gray-400 hover:border-gray-600'
-                      }`}
-                    >
-                      <div className="text-xs font-medium">{type.label}</div>
-                    </button>
-                  ))}
-                </div>
-                <p className="text-xs text-gray-500 mt-2">{selectedType?.description}</p>
-              </div>
+          {/* Variable Type */}
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">
+              What are you testing?
+            </label>
+            <div className="grid grid-cols-4 gap-2">
+              {variableTypes.map(type => (
+                <button
+                  key={type.id}
+                  type="button"
+                  onClick={() => setForm({ ...form, variable_type: type.id })}
+                  className={`p-3 rounded-lg border text-center transition-all ${
+                    form.variable_type === type.id
+                      ? 'border-brand-primary bg-brand-primary/20 text-white'
+                      : 'border-dark-border bg-dark-bg text-gray-400 hover:border-gray-600'
+                  }`}
+                >
+                  <div className="text-xs font-medium">{type.label}</div>
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-gray-500 mt-2">{selectedType?.description}</p>
+          </div>
 
-              {/* Custom Label (for custom type) */}
-              {form.variable_type === 'custom' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Variable Name
-                  </label>
-                  <input
-                    type="text"
-                    value={form.variable_label}
-                    onChange={e => setForm({ ...form, variable_label: e.target.value })}
-                    className="input-dark w-full"
-                  />
-                </div>
-              )}
-            </>
+          {/* Custom Label (for custom type) */}
+          {form.variable_type === 'custom' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                Variable Name
+              </label>
+              <input
+                type="text"
+                value={form.variable_label}
+                onChange={e => setForm({ ...form, variable_label: e.target.value })}
+                className="input-dark w-full"
+              />
+            </div>
           )}
 
           {/* Mass and Efficiency */}
@@ -227,7 +178,6 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   )
 }

@@ -21,7 +21,7 @@ export const useVariations = (studyId) => {
         .from('study_variations')
         .select(`
           *,
-          runs:study_runs(id, fitted_cda, fitted_crr, rmse, r2, is_valid)
+          runs:study_runs(id, name, ride_date, gpx_filename, fitted_cda, fitted_crr, rmse, r2, wind_speed, wind_direction, notes, is_valid, created_at)
         `)
         .eq('study_id', studyId)
         .eq('user_id', user.id)
@@ -29,8 +29,38 @@ export const useVariations = (studyId) => {
 
       if (error) throw error
 
+      const rawVariations = data || []
+
+      // Keep exactly one baseline selected for each study.
+      if (rawVariations.length > 0) {
+        const baselineCount = rawVariations.filter(v => v.is_baseline).length
+        if (baselineCount !== 1) {
+          const baselineId = rawVariations.find(v => v.is_baseline)?.id || rawVariations[0].id
+
+          const { error: clearBaselineError } = await supabase
+            .from('study_variations')
+            .update({ is_baseline: false })
+            .eq('study_id', studyId)
+            .eq('user_id', user.id)
+
+          if (clearBaselineError) throw clearBaselineError
+
+          const { error: setBaselineError } = await supabase
+            .from('study_variations')
+            .update({ is_baseline: true })
+            .eq('id', baselineId)
+            .eq('user_id', user.id)
+
+          if (setBaselineError) throw setBaselineError
+
+          rawVariations.forEach(variation => {
+            variation.is_baseline = variation.id === baselineId
+          })
+        }
+      }
+
       // Calculate aggregated stats from valid runs
-      const variationsWithStats = (data || []).map(variation => {
+      const variationsWithStats = rawVariations.map(variation => {
         const validRuns = (variation.runs || []).filter(r => r.is_valid && r.fitted_cda)
         const runCount = validRuns.length
 
@@ -84,7 +114,8 @@ export const useVariations = (studyId) => {
         ...variation,
         study_id: studyId,
         user_id: user.id,
-        sort_order: maxOrder + 1
+        sort_order: maxOrder + 1,
+        is_baseline: variations.length === 0
       })
       .select()
       .single()
@@ -108,13 +139,43 @@ export const useVariations = (studyId) => {
   }
 
   const deleteVariation = async (id) => {
+    const deletingVariation = variations.find(v => v.id === id)
+    const remainingVariations = variations.filter(v => v.id !== id)
+
     const { error } = await supabase
       .from('study_variations')
       .delete()
       .eq('id', id)
 
     if (error) throw error
-    setVariations(prev => prev.filter(v => v.id !== id))
+
+    if (deletingVariation?.is_baseline && remainingVariations.length > 0) {
+      const nextBaselineId = remainingVariations[0].id
+
+      const { error: clearBaselineError } = await supabase
+        .from('study_variations')
+        .update({ is_baseline: false })
+        .eq('study_id', studyId)
+        .eq('user_id', user.id)
+
+      if (clearBaselineError) throw clearBaselineError
+
+      const { error: setBaselineError } = await supabase
+        .from('study_variations')
+        .update({ is_baseline: true })
+        .eq('id', nextBaselineId)
+        .eq('user_id', user.id)
+
+      if (setBaselineError) throw setBaselineError
+
+      setVariations(remainingVariations.map(v => ({
+        ...v,
+        is_baseline: v.id === nextBaselineId
+      })))
+      return
+    }
+
+    setVariations(remainingVariations)
   }
 
   const setBaseline = async (id) => {

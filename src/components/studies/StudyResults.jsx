@@ -21,7 +21,6 @@ export const StudyResults = ({ study, variations, onBack }) => {
 
   // Calculate speed differences (approximate: 1% CdA reduction = ~0.3% speed increase at 40km/h)
   const calculateSpeedDelta = (cdaDiff) => {
-    const baseSpeed = 40 // km/h reference
     const cdaPercent = (cdaDiff / baselineCda) * 100
     const speedDelta = -cdaPercent * 0.3 // negative CdA diff = positive speed
     return speedDelta
@@ -44,7 +43,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </button>
-          <h2 className="text-2xl font-bold text-white">Study Results</h2>
+          <h2 className="text-2xl font-bold text-white flex-1">Study Results</h2>
         </div>
 
         <div className="text-center py-12 bg-dark-card rounded-xl border border-dark-border">
@@ -155,7 +154,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
         </button>
-        <div>
+        <div className="flex-1">
           <h2 className="text-2xl font-bold text-white">{study.name} - Results</h2>
           <p className="text-gray-400 text-sm">Comparing {validVariations.length} variations</p>
         </div>

@@ -45,35 +45,199 @@ export const safeNum = (val, fallback) => {
   return isNaN(n) ? fallback : n
 }
 
-// Solve for velocity given power and conditions
+const LARGE_RESIDUAL = 1e6
+const DEFAULT_CDA_BOUNDS = [0.15, 0.50]
+const DEFAULT_CRR_BOUNDS = [0.002, 0.012]
+
+const clamp = (value, min, max) => Math.max(min, Math.min(max, value))
+
+const normalizeBounds = (rawBounds, fallbackBounds) => {
+  if (!Array.isArray(rawBounds) || rawBounds.length < 2) return [...fallbackBounds]
+  let min = Number(rawBounds[0])
+  let max = Number(rawBounds[1])
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return [...fallbackBounds]
+  if (min > max) [min, max] = [max, min]
+  if (max - min < 1e-9) return [...fallbackBounds]
+  return [min, max]
+}
+
+const clampParamsToBounds = (params, bounds) => ([
+  clamp(params[0], bounds[0][0], bounds[0][1]),
+  clamp(params[1], bounds[1][0], bounds[1][1])
+])
+
+const safeArrayValue = (arr, idx, fallback = 0) => {
+  if (!Array.isArray(arr) || idx < 0 || idx >= arr.length) return fallback
+  const value = arr[idx]
+  return Number.isFinite(value) ? value : fallback
+}
+
+const getCommonSeriesLength = (data, keys = ['pwr', 'v', 'a', 'ds', 'ele', 'b']) => {
+  if (!data || typeof data !== 'object') return 0
+  let len = Infinity
+  for (const key of keys) {
+    const series = data[key]
+    if (!Array.isArray(series) || series.length === 0) return 0
+    len = Math.min(len, series.length)
+  }
+  return Number.isFinite(len) ? len : 0
+}
+
+const normalizeRangeIndices = (len, si, ei) => {
+  if (!Number.isFinite(len) || len < 2) return null
+  const sRaw = Number.isFinite(si) ? Math.floor(si) : 0
+  const eRaw = Number.isFinite(ei) ? Math.floor(ei) : len
+  let sIdx = clamp(sRaw, 0, len - 2)
+  let eIdx = clamp(eRaw, sIdx + 2, len)
+  if (eIdx - sIdx < 2) {
+    sIdx = Math.max(0, len - 2)
+    eIdx = len
+  }
+  return { si: sIdx, ei: eIdx, n: eIdx - sIdx }
+}
+
+const sanitizeResiduals = (rawResiduals, targetLength = null) => {
+  if (!Array.isArray(rawResiduals) || rawResiduals.length === 0) {
+    return [LARGE_RESIDUAL]
+  }
+  const residuals = rawResiduals.map((ri) => (Number.isFinite(ri) ? ri : LARGE_RESIDUAL))
+  if (targetLength == null || targetLength <= 0) return residuals
+  if (residuals.length === targetLength) return residuals
+  if (residuals.length > targetLength) return residuals.slice(0, targetLength)
+
+  const padded = [...residuals]
+  while (padded.length < targetLength) padded.push(LARGE_RESIDUAL)
+  return padded
+}
+
+const buildStartPoints = (points, bounds) => {
+  const deduped = []
+  const seen = new Set()
+  for (const point of points) {
+    if (!Array.isArray(point) || point.length < 2) continue
+    const clamped = clampParamsToBounds([
+      Number.isFinite(point[0]) ? point[0] : bounds[0][0],
+      Number.isFinite(point[1]) ? point[1] : bounds[1][0]
+    ], bounds)
+    const key = `${clamped[0].toFixed(7)}:${clamped[1].toFixed(8)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(clamped)
+  }
+  return deduped.length > 0 ? deduped : [clampParamsToBounds([0.28, 0.0045], bounds)]
+}
+
+const nearLowerBound = (value, bounds) => {
+  const [min, max] = bounds
+  const tol = Math.max((max - min) * 0.01, 1e-5)
+  return value - min <= tol
+}
+
+const nearUpperBound = (value, bounds) => {
+  const [min, max] = bounds
+  const tol = Math.max((max - min) * 0.01, 1e-5)
+  return max - value <= tol
+}
+
+const computeRailingDetails = (cda, crr, cdaBounds, crrBounds) => {
+  const cdaAtLowerBound = nearLowerBound(cda, cdaBounds)
+  const cdaAtUpperBound = nearUpperBound(cda, cdaBounds)
+  const crrAtLowerBound = nearLowerBound(crr, crrBounds)
+  const crrAtUpperBound = nearUpperBound(crr, crrBounds)
+  return {
+    cdaAtLowerBound,
+    cdaAtUpperBound,
+    crrAtLowerBound,
+    crrAtUpperBound
+  }
+}
+
+const computeVeStepDelta = (data, i, io, wr, mass, eff, rho, cda, crr, wSpd) => {
+  const { pwr, v, a, ds, b } = data
+  const vg = Math.max(1.0, safeArrayValue(v, i, 1.0))
+  const pi = clamp(i - io, 0, pwr.length - 1)
+  const power = safeArrayValue(pwr, pi, 0) * eff
+  const accel = safeArrayValue(a, i, 0)
+  const distanceStep = Math.max(0, safeArrayValue(ds, i, 0))
+  const bearingRad = safeArrayValue(b, i, 0) * (Math.PI / 180)
+  const va = vg + wSpd * Math.cos(bearingRad - wr)
+
+  const dragForce = 0.5 * rho * cda * va * va * Math.sign(va)
+  const tractionForce = power / vg
+  const rollingForce = mass * GRAVITY * crr
+  const inertialForce = mass * accel
+  const netForce = tractionForce - rollingForce - inertialForce - dragForce
+  const delta = (netForce / (mass * GRAVITY)) * distanceStep
+  return Number.isFinite(delta) ? delta : 0
+}
+
+// Solve for velocity given power and conditions.
+// rho is expected to be local ambient air density (kg/m^3).
 // windSpeed in m/s, positive = headwind, negative = tailwind
 export const solveVelocity = (watts, grade, mass, cda, crr, rho, eff, elev = 0, windSpeed = 0) => {
-  const wheelPwr = watts * eff
+  void elev // Retained for backward-compatible signature.
+  const wheelPwr = Math.max(0, watts * eff)
   const theta = Math.atan(grade / 100)
   const fRes = mass * GRAVITY * (Math.sin(theta) + crr * Math.cos(theta))
+  const K = 0.5 * rho * cda
 
-  // Adjust rho for altitude if elevation is provided
-  let localRho = rho
-  if (typeof elev === 'number' && elev > 0) {
-    localRho = rho * Math.exp(-elev / 9000)
-  }
-
-  const K = 0.5 * localRho * cda
-
-  // Newton-Raphson solver with wind
-  // Air velocity = ground velocity + headwind component
-  let v = 10
-  for (let i = 0; i < 15; i++) {
-    const va = v + windSpeed // apparent air velocity
+  const powerBalance = (v) => {
+    const vg = Math.max(0.05, v)
+    const va = vg + windSpeed // apparent air velocity
     const fAero = K * va * Math.abs(va) // drag force (preserves sign)
-    const f = fAero * v + fRes * v - wheelPwr
-    const df = K * (2 * va * v + va * Math.abs(va) / Math.max(0.1, v)) + fRes
-    if (Math.abs(df) < 1e-6) break
-    const step = f / df
-    v = v - step
-    if (v < 0.1) v = 0.1
+    return (fAero + fRes) * vg - wheelPwr
   }
-  return Math.max(0, v)
+
+  const powerBalanceDerivative = (v) => {
+    const vg = Math.max(0.05, v)
+    const va = vg + windSpeed
+    const dragTerm = va * Math.abs(va)
+    const dDragTerm = 2 * Math.abs(va)
+    return K * (dragTerm + vg * dDragTerm) + fRes
+  }
+
+  // Bracket the physically relevant root (balance crossing from negative to positive).
+  let low = 0.05
+  let high = 20
+  let fLow = powerBalance(low)
+  let fHigh = powerBalance(high)
+
+  if (fLow > 0) return low
+  while (fHigh < 0 && high < 120) {
+    high *= 1.5
+    fHigh = powerBalance(high)
+  }
+
+  // No upper crossing found in a realistic range: return the best bounded estimate.
+  if (fHigh < 0) return high
+
+  let v = Math.min(Math.max(10, low), high)
+
+  // Safeguarded Newton iterations with bisection fallback.
+  for (let i = 0; i < 30; i++) {
+    const f = powerBalance(v)
+    if (Math.abs(f) < 1e-7) return Math.max(0, v)
+
+    if (f > 0) {
+      high = v
+    } else {
+      low = v
+    }
+
+    const df = powerBalanceDerivative(v)
+    let next = Number.NaN
+    if (Number.isFinite(df) && Math.abs(df) > 1e-8) {
+      next = v - (f / df)
+    }
+
+    // Keep root bracketed for robustness.
+    if (!Number.isFinite(next) || next <= low || next >= high) {
+      next = (low + high) / 2
+    }
+    v = next
+  }
+
+  return Math.max(0, (low + high) / 2)
 }
 
 // ============================================================================
@@ -109,29 +273,48 @@ const levenbergMarquardt = (residualFn, params0, bounds, options = {}) => {
     finiteDiffStep = [1e-6, 1e-7]  // Step sizes for CdA, Crr
   } = options
 
-  let params = [...params0]
+  let params = clampParamsToBounds(params0, bounds)
   let lambda = lambdaInit
+
+  const evaluateResiduals = (p, targetLength = null) => {
+    const clamped = clampParamsToBounds(p, bounds)
+    return sanitizeResiduals(residualFn(clamped), targetLength)
+  }
 
   // Calculate sum of squared residuals
   const calcSSR = (p) => {
-    const r = residualFn(p)
+    const r = evaluateResiduals(p)
     return r.reduce((sum, ri) => sum + ri * ri, 0)
   }
 
   // Calculate Jacobian numerically (2 columns for CdA, Crr)
   const calcJacobian = (p) => {
-    const r0 = residualFn(p)
+    const clamped = clampParamsToBounds(p, bounds)
+    const r0 = evaluateResiduals(clamped)
     const n = r0.length
     const J = Array(n).fill(null).map(() => [0, 0])
 
     for (let j = 0; j < 2; j++) {
-      const h = finiteDiffStep[j]
-      const pPlus = [...p]
-      pPlus[j] += h
-      const rPlus = residualFn(pPlus)
+      const span = Math.max(1e-9, bounds[j][1] - bounds[j][0])
+      const baseStep = Number.isFinite(finiteDiffStep[j]) ? Math.abs(finiteDiffStep[j]) : span * 1e-5
+      const h = Math.max(baseStep, Math.abs(clamped[j]) * 1e-5, span * 1e-6, 1e-9)
+
+      const pPlus = [...clamped]
+      const pMinus = [...clamped]
+      pPlus[j] = clamp(clamped[j] + h, bounds[j][0], bounds[j][1])
+      pMinus[j] = clamp(clamped[j] - h, bounds[j][0], bounds[j][1])
+      const denom = pPlus[j] - pMinus[j]
+
+      if (Math.abs(denom) < 1e-12) {
+        for (let i = 0; i < n; i++) J[i][j] = 0
+        continue
+      }
+
+      const rPlus = evaluateResiduals(pPlus, n)
+      const rMinus = evaluateResiduals(pMinus, n)
 
       for (let i = 0; i < n; i++) {
-        J[i][j] = (rPlus[i] - r0[i]) / h
+        J[i][j] = (rPlus[i] - rMinus[i]) / denom
       }
     }
     return { J, r: r0 }
@@ -177,10 +360,10 @@ const levenbergMarquardt = (residualFn, params0, bounds, options = {}) => {
       }
 
       // Apply bounds
-      let newParams = [
-        Math.max(bounds[0][0], Math.min(bounds[0][1], params[0] + delta[0])),
-        Math.max(bounds[1][0], Math.min(bounds[1][1], params[1] + delta[1]))
-      ]
+      const newParams = clampParamsToBounds([
+        params[0] + delta[0],
+        params[1] + delta[1]
+      ], bounds)
 
       const newSSR = calcSSR(newParams)
 
@@ -202,8 +385,12 @@ const levenbergMarquardt = (residualFn, params0, bounds, options = {}) => {
       }
     }
 
-    // Check convergence
-    if (!stepAccepted || Math.sqrt(ssr / n) < tol) {
+    // Check convergence.
+    // Do not stop immediately on a rejected iteration; LM can recover with a larger lambda.
+    if (Math.sqrt(ssr / n) < tol) {
+      break
+    }
+    if (!stepAccepted && lambda > 1e12) {
       break
     }
   }
@@ -220,23 +407,52 @@ const levenbergMarquardt = (residualFn, params0, bounds, options = {}) => {
 //
 export const solveCdaCrr = (
   data, si, ei, initialCda, initialCrr, mass, eff, rho, offset, wSpd, wDir,
-  { method = 'chung', fastMode = false, maxIterations = null } = {}
+  options = {}
 ) => {
-  const { pwr, v, a, ds, ele, b } = data
-  const io = Math.round(offset)
-  const wr = wDir * (Math.PI / 180)
-  const n = ei - si
+  const { method = 'chung', fastMode = false, maxIterations = null } = options
+  const cdaBounds = normalizeBounds(options.cdaBounds, DEFAULT_CDA_BOUNDS)
+  const crrBounds = normalizeBounds(options.crrBounds, DEFAULT_CRR_BOUNDS)
+  const bounds = [cdaBounds, crrBounds]
+  const [fallbackCda, fallbackCrr] = clampParamsToBounds([initialCda, initialCrr], bounds)
+  const len = getCommonSeriesLength(data)
+  const range = normalizeRangeIndices(len, si, ei)
+
+  if (!range) {
+    const railingDetails = computeRailingDetails(fallbackCda, fallbackCrr, cdaBounds, crrBounds)
+    return {
+      cda: fallbackCda,
+      crr: fallbackCrr,
+      rmse: 0,
+      bow: 0,
+      netElev: 0,
+      gradeVar: 0,
+      speedVar: 0,
+      avgSpeed: 0,
+      quality: 0,
+      bounds: { cda: cdaBounds, crr: crrBounds },
+      isRailing: Object.values(railingDetails).some(Boolean),
+      railingDetails
+    }
+  }
+
+  const { v, ele, ds } = data
+  const { si: sIdx, ei: eIdx } = range
+  const io = Math.round(Number.isFinite(offset) ? offset : 0)
+  const wr = (Number.isFinite(wDir) ? wDir : 0) * (Math.PI / 180)
+  const windSpeed = Number.isFinite(wSpd) ? wSpd : 0
 
   // Calculate segment statistics for quality assessment
-  const segEle = ele.slice(si, ei)
-  const segV = v.slice(si, ei)
-  const segDs = ds.slice(si, ei)
+  const segEle = ele.slice(sIdx, eIdx)
+  const segV = v.slice(sIdx, eIdx).filter(Number.isFinite)
+  const segDs = ds.slice(sIdx, eIdx)
 
   // Grade variance
   const grades = []
   for (let i = 1; i < segEle.length; i++) {
-    const d = segDs[i]
-    if (d > 0.5) grades.push((segEle[i] - segEle[i - 1]) / d * 100)
+    const d = Number.isFinite(segDs[i]) ? segDs[i] : 0
+    const elev = Number.isFinite(segEle[i]) ? segEle[i] : segEle[i - 1]
+    const prevElev = Number.isFinite(segEle[i - 1]) ? segEle[i - 1] : elev
+    if (d > 0.5) grades.push(((elev - prevElev) / d) * 100)
   }
   let gradeVar = 0
   if (grades.length > 1) {
@@ -245,30 +461,22 @@ export const solveCdaCrr = (
   }
 
   // Speed variance
-  const avgSpeed = segV.reduce((a, b) => a + b, 0) / segV.length
-  const speedVar = segV.reduce((sum, s) => sum + Math.pow(s - avgSpeed, 2), 0) / segV.length
+  const avgSpeed = segV.length > 0 ? segV.reduce((a, b) => a + b, 0) / segV.length : 0
+  const speedVar = segV.length > 0
+    ? segV.reduce((sum, s) => sum + Math.pow(s - avgSpeed, 2), 0) / segV.length
+    : 0
   const avgSpeedKph = avgSpeed * 3.6
 
   // Calculate virtual elevation profile for given CdA/Crr
   // ONLY uses data within selected range [si, ei) - treats it as standalone segment
   // Starts fresh at ele[si] so cropped region is analyzed independently
-  // Uses physics values from START of each segment (i-1) for proper alignment
   const calcVirtualElevation = (tc, tr) => {
     const vEle = []
-    let cur = ele[si]  // Start at GPS elevation of range start
+    let cur = safeArrayValue(ele, sIdx, 0)  // Start at GPS elevation of range start
     vEle.push(cur)
 
-    for (let i = si + 1; i < ei; i++) {
-      // Use physics values from start of segment (i-1) since ds[i] spans from i-1 to i
-      const segStart = i - 1
-      const vg = Math.max(0.1, v[segStart])
-      let pi = segStart - io
-      if (pi < si) pi = si        // Clamp to crop start
-      if (pi >= ei) pi = ei - 1   // Clamp to crop end
-      const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
-      const localRho = rho * Math.exp(-ele[segStart] / 9000)
-      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[segStart]) - (0.5 * localRho * tc * va * va * Math.sign(va))
-      cur += (f / (mass * GRAVITY)) * ds[i]
+    for (let i = sIdx + 1; i < eIdx; i++) {
+      cur += computeVeStepDelta(data, i, io, wr, mass, eff, rho, tc, tr, windSpeed)
       vEle.push(cur)
     }
     return vEle
@@ -278,7 +486,7 @@ export const solveCdaCrr = (
   const chungResidualFn = ([tc, tr]) => {
     const vEle = calcVirtualElevation(tc, tr)
     // vEle[k] corresponds to ele[si + k]
-    return vEle.map((ve, k) => ve - ele[si + k])
+    return vEle.map((ve, k) => ve - safeArrayValue(ele, sIdx + k, ve))
   }
 
   // Shen method residuals: minimize net elevation AND bow
@@ -294,7 +502,7 @@ export const solveCdaCrr = (
     // Add sampled elevation residuals for stability
     const step = Math.max(1, Math.floor(vEle.length / 10))
     for (let k = 0; k < vEle.length; k += step) {
-      residuals.push((vEle[k] - ele[si + k]) * 0.5)
+      residuals.push((vEle[k] - safeArrayValue(ele, sIdx + k, vEle[k])) * 0.5)
     }
 
     return residuals
@@ -303,11 +511,8 @@ export const solveCdaCrr = (
   // Select residual function based on method
   const residualFn = method === 'shen' ? shenResidualFn : chungResidualFn
 
-  // Parameter bounds: CdA [0.1, 0.6], Crr [0.001, 0.015]
-  const bounds = [[0.1, 0.6], [0.001, 0.015]]
-
   // Multi-start LM optimization for robustness
-  const startPoints = fastMode ? [
+  const seededStarts = fastMode ? [
     [initialCda, initialCrr],
     [0.28, 0.0045],
   ] : [
@@ -317,9 +522,10 @@ export const solveCdaCrr = (
     [0.28, 0.0045],
     [0.22, 0.003],
   ]
+  const startPoints = buildStartPoints(seededStarts, bounds)
 
   const maxIter = maxIterations ?? (fastMode ? 50 : 100)
-  let globalBest = { cda: initialCda, crr: initialCrr, rmse: Infinity, cost: Infinity, bow: 0, netElev: 0 }
+  let globalBest = { cda: fallbackCda, crr: fallbackCrr, rmse: Infinity, cost: Infinity, bow: 0, netElev: 0 }
 
   for (const [startCda, startCrr] of startPoints) {
     const result = levenbergMarquardt(
@@ -330,16 +536,19 @@ export const solveCdaCrr = (
     )
 
     // Calculate metrics for this result
-    const vEle = calcVirtualElevation(result.params[0], result.params[1])
+    const [fitCda, fitCrr] = clampParamsToBounds(result.params, bounds)
+    const vEle = calcVirtualElevation(fitCda, fitCrr)
     // vEle[k] corresponds to ele[si + k], calculate RMSE
     let sqErr = 0
     for (let k = 0; k < vEle.length; k++) {
-      sqErr += Math.pow(vEle[k] - ele[si + k], 2)
+      const elev = safeArrayValue(ele, sIdx + k, vEle[k])
+      sqErr += Math.pow(vEle[k] - elev, 2)
     }
-    const rmse = Math.sqrt(sqErr / n)
+    const rmse = Math.sqrt(sqErr / Math.max(1, vEle.length))
     const bow = calculateBow(vEle)
     const netElev = vEle[vEle.length - 1] - vEle[0]
     const cost = Math.abs(netElev) + Math.abs(bow) * 3
+    if (!Number.isFinite(rmse) || !Number.isFinite(cost)) continue
 
     // Select best based on method
     const isBetter = method === 'shen'
@@ -348,8 +557,8 @@ export const solveCdaCrr = (
 
     if (isBetter) {
       globalBest = {
-        cda: result.params[0],
-        crr: result.params[1],
+        cda: fitCda,
+        crr: fitCrr,
         rmse,
         cost,
         bow,
@@ -358,7 +567,10 @@ export const solveCdaCrr = (
     }
   }
 
-  const quality = (1 / (1 + globalBest.rmse)) * (1 + Math.sqrt(gradeVar)) * (1 + Math.sqrt(speedVar) * 0.5)
+  const rmseForQuality = Number.isFinite(globalBest.rmse) ? globalBest.rmse : LARGE_RESIDUAL
+  const quality = (1 / (1 + rmseForQuality)) * (1 + Math.sqrt(Math.max(0, gradeVar))) * (1 + Math.sqrt(Math.max(0, speedVar)) * 0.5)
+  const railingDetails = computeRailingDetails(globalBest.cda, globalBest.crr, cdaBounds, crrBounds)
+  const isRailing = Object.values(railingDetails).some(Boolean)
 
   return {
     cda: globalBest.cda,
@@ -369,8 +581,37 @@ export const solveCdaCrr = (
     gradeVar,
     speedVar,
     avgSpeed: avgSpeedKph,
-    quality
+    quality,
+    bounds: { cda: cdaBounds, crr: crrBounds },
+    isRailing,
+    railingDetails
   }
+}
+
+// Calculate virtual elevation profile for given CdA/Crr
+export const calculateVirtualElevation = (
+  data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir
+) => {
+  const len = getCommonSeriesLength(data)
+  const range = normalizeRangeIndices(len, si, ei)
+  if (!range) return []
+
+  const { ele } = data
+  const { si: sIdx, ei: eIdx } = range
+  const io = Math.round(Number.isFinite(offset) ? offset : 0)
+  const wr = (Number.isFinite(wDir) ? wDir : 0) * (Math.PI / 180)
+  const windSpeed = Number.isFinite(wSpd) ? wSpd : 0
+
+  const vEle = []
+  let cur = safeArrayValue(ele, sIdx, 0)
+  vEle.push(cur)
+
+  for (let i = sIdx + 1; i < eIdx; i++) {
+    cur += computeVeStepDelta(data, i, io, wr, mass, eff, rho, cda, crr, windSpeed)
+    vEle.push(cur)
+  }
+
+  return vEle
 }
 
 // Calculate bow (curvature) of virtual elevation plot for Shen method
@@ -418,33 +659,49 @@ export const solveCdaCrrClimb = (
   mass, eff, rho,
   offset1, offset2,
   wSpd, wDir,
-  { maxIterations = 500 } = {}
+  options = {}
 ) => {
-  const wr = wDir * (Math.PI / 180)
-  const n1 = ei1 - si1
-  const n2 = ei2 - si2
+  const { maxIterations = 500 } = options
+  const cdaBounds = normalizeBounds(options.cdaBounds, DEFAULT_CDA_BOUNDS)
+  const crrBounds = normalizeBounds(options.crrBounds, DEFAULT_CRR_BOUNDS)
+  const bounds = [cdaBounds, crrBounds]
+  const [fallbackCda, fallbackCrr] = clampParamsToBounds([initialCda, initialCrr], bounds)
+  const range1 = normalizeRangeIndices(getCommonSeriesLength(data1), si1, ei1)
+  const range2 = normalizeRangeIndices(getCommonSeriesLength(data2), si2, ei2)
+  const wr = (Number.isFinite(wDir) ? wDir : 0) * (Math.PI / 180)
+  const windSpeed = Number.isFinite(wSpd) ? wSpd : 0
+
+  if (!range1 || !range2) {
+    const railingDetails = computeRailingDetails(fallbackCda, fallbackCrr, cdaBounds, crrBounds)
+    return {
+      cda: fallbackCda,
+      crr: fallbackCrr,
+      rmse: 0,
+      rmse1: 0,
+      rmse2: 0,
+      r2: 0,
+      avgSpeed1: 0,
+      avgSpeed2: 0,
+      bounds: { cda: cdaBounds, crr: crrBounds },
+      isRailing: Object.values(railingDetails).some(Boolean),
+      railingDetails
+    }
+  }
+
+  const { si: s1, ei: e1, n: n1 } = range1
+  const { si: s2, ei: e2, n: n2 } = range2
 
   // Calculate virtual elevation for a given file
   // Uses same convention as display: vEle[0] = ele[si], then accumulate deltas
-  // Uses physics values from START of each segment (i-1) for proper alignment
   const calcVE = (tc, tr, data, si, ei, offset) => {
-    const { pwr, v, a, ds, ele, b } = data
-    const io = Math.round(offset)
+    const { ele } = data
+    const io = Math.round(Number.isFinite(offset) ? offset : 0)
     const vEle = []
-    let cur = ele[si]
+    let cur = safeArrayValue(ele, si, 0)
     vEle.push(cur)  // vEle[0] = ele[si], no delta yet
 
     for (let i = si + 1; i < ei; i++) {
-      // Use physics values from start of segment (i-1) since ds[i] spans from i-1 to i
-      const segStart = i - 1
-      const vg = Math.max(0.1, v[segStart])
-      let pi = segStart - io
-      if (pi < si) pi = si        // Clamp to crop start
-      if (pi >= ei) pi = ei - 1   // Clamp to crop end
-      const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
-      const localRho = rho * Math.exp(-ele[segStart] / 9000)
-      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[segStart]) - (0.5 * localRho * tc * va * va * Math.sign(va))
-      cur += (f / (mass * GRAVITY)) * ds[i]
+      cur += computeVeStepDelta(data, i, io, wr, mass, eff, rho, tc, tr, windSpeed)
       vEle.push(cur)
     }
     return vEle
@@ -452,28 +709,25 @@ export const solveCdaCrrClimb = (
 
   // Combined residual function - concatenates residuals from both files
   const residualFn = ([tc, tr]) => {
-    const vEle1 = calcVE(tc, tr, data1, si1, ei1, offset1)
-    const vEle2 = calcVE(tc, tr, data2, si2, ei2, offset2)
+    const vEle1 = calcVE(tc, tr, data1, s1, e1, offset1)
+    const vEle2 = calcVE(tc, tr, data2, s2, e2, offset2)
 
-    const res1 = vEle1.map((ve, i) => ve - data1.ele[si1 + i])
-    const res2 = vEle2.map((ve, i) => ve - data2.ele[si2 + i])
+    const res1 = vEle1.map((ve, i) => ve - safeArrayValue(data1.ele, s1 + i, ve))
+    const res2 = vEle2.map((ve, i) => ve - safeArrayValue(data2.ele, s2 + i, ve))
 
     return [...res1, ...res2]  // LM minimizes combined RMSE
   }
 
-  // Parameter bounds: CdA [0.1, 0.6], Crr [0.001, 0.015]
-  const bounds = [[0.1, 0.6], [0.001, 0.015]]
-
   // Multi-start LM optimization
-  const startPoints = [
+  const startPoints = buildStartPoints([
     [initialCda, initialCrr],
     [0.25, 0.004],
     [0.30, 0.005],
     [0.28, 0.0045],
     [0.22, 0.003],
-  ]
+  ], bounds)
 
-  let globalBest = { cda: initialCda, crr: initialCrr, rmse: Infinity, rmse1: Infinity, rmse2: Infinity }
+  let globalBest = { cda: fallbackCda, crr: fallbackCrr, rmse: Infinity, rmse1: Infinity, rmse2: Infinity }
 
   for (const [startCda, startCrr] of startPoints) {
     const result = levenbergMarquardt(
@@ -484,30 +738,32 @@ export const solveCdaCrrClimb = (
     )
 
     // Calculate metrics for this result
-    const vEle1 = calcVE(result.params[0], result.params[1], data1, si1, ei1, offset1)
-    const vEle2 = calcVE(result.params[0], result.params[1], data2, si2, ei2, offset2)
+    const [fitCda, fitCrr] = clampParamsToBounds(result.params, bounds)
+    const vEle1 = calcVE(fitCda, fitCrr, data1, s1, e1, offset1)
+    const vEle2 = calcVE(fitCda, fitCrr, data2, s2, e2, offset2)
 
     // Calculate individual RMSEs
     let sqErr1 = 0
     for (let i = 0; i < vEle1.length; i++) {
-      sqErr1 += Math.pow(vEle1[i] - data1.ele[si1 + i], 2)
+      sqErr1 += Math.pow(vEle1[i] - safeArrayValue(data1.ele, s1 + i, vEle1[i]), 2)
     }
-    const rmse1 = Math.sqrt(sqErr1 / n1)
+    const rmse1 = Math.sqrt(sqErr1 / Math.max(1, vEle1.length))
 
     let sqErr2 = 0
     for (let i = 0; i < vEle2.length; i++) {
-      sqErr2 += Math.pow(vEle2[i] - data2.ele[si2 + i], 2)
+      sqErr2 += Math.pow(vEle2[i] - safeArrayValue(data2.ele, s2 + i, vEle2[i]), 2)
     }
-    const rmse2 = Math.sqrt(sqErr2 / n2)
+    const rmse2 = Math.sqrt(sqErr2 / Math.max(1, vEle2.length))
 
     // Combined RMSE (weighted by number of points)
-    const totalPoints = n1 + n2
+    const totalPoints = Math.max(1, vEle1.length + vEle2.length)
     const rmse = Math.sqrt((sqErr1 + sqErr2) / totalPoints)
+    if (!Number.isFinite(rmse)) continue
 
     if (rmse < globalBest.rmse) {
       globalBest = {
-        cda: result.params[0],
-        crr: result.params[1],
+        cda: fitCda,
+        crr: fitCrr,
         rmse,
         rmse1,
         rmse2
@@ -516,36 +772,43 @@ export const solveCdaCrrClimb = (
   }
 
   // Calculate R² for combined fit
-  const vEle1 = calcVE(globalBest.cda, globalBest.crr, data1, si1, ei1, offset1)
-  const vEle2 = calcVE(globalBest.cda, globalBest.crr, data2, si2, ei2, offset2)
+  const vEle1 = calcVE(globalBest.cda, globalBest.crr, data1, s1, e1, offset1)
+  const vEle2 = calcVE(globalBest.cda, globalBest.crr, data2, s2, e2, offset2)
 
   // Combined mean elevation
   let eleSum = 0
-  for (let i = si1; i < ei1; i++) eleSum += data1.ele[i]
-  for (let i = si2; i < ei2; i++) eleSum += data2.ele[i]
+  for (let i = s1; i < e1; i++) eleSum += safeArrayValue(data1.ele, i, 0)
+  for (let i = s2; i < e2; i++) eleSum += safeArrayValue(data2.ele, i, 0)
   const eleMean = eleSum / (n1 + n2)
 
   // Total sum of squares and residual sum of squares
   let ssTot = 0, ssRes = 0
   for (let i = 0; i < vEle1.length; i++) {
-    ssTot += Math.pow(data1.ele[si1 + i] - eleMean, 2)
-    ssRes += Math.pow(vEle1[i] - data1.ele[si1 + i], 2)
+    const elev = safeArrayValue(data1.ele, s1 + i, eleMean)
+    ssTot += Math.pow(elev - eleMean, 2)
+    ssRes += Math.pow(vEle1[i] - elev, 2)
   }
   for (let i = 0; i < vEle2.length; i++) {
-    ssTot += Math.pow(data2.ele[si2 + i] - eleMean, 2)
-    ssRes += Math.pow(vEle2[i] - data2.ele[si2 + i], 2)
+    const elev = safeArrayValue(data2.ele, s2 + i, eleMean)
+    ssTot += Math.pow(elev - eleMean, 2)
+    ssRes += Math.pow(vEle2[i] - elev, 2)
   }
   const r2 = ssTot > 0 ? 1 - (ssRes / ssTot) : 0
 
   // Calculate average speeds for each file
-  const avgSpeed1 = data1.v.slice(si1, ei1).reduce((a, b) => a + b, 0) / n1 * 3.6
-  const avgSpeed2 = data2.v.slice(si2, ei2).reduce((a, b) => a + b, 0) / n2 * 3.6
+  const avgSpeed1 = data1.v.slice(s1, e1).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0) / Math.max(1, n1) * 3.6
+  const avgSpeed2 = data2.v.slice(s2, e2).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0) / Math.max(1, n2) * 3.6
+  const railingDetails = computeRailingDetails(globalBest.cda, globalBest.crr, cdaBounds, crrBounds)
+  const isRailing = Object.values(railingDetails).some(Boolean)
 
   return {
     ...globalBest,
     r2,
     avgSpeed1,
-    avgSpeed2
+    avgSpeed2,
+    bounds: { cda: cdaBounds, crr: crrBounds },
+    isRailing,
+    railingDetails
   }
 }
 
@@ -577,33 +840,48 @@ export const solveCdaCrrShenDual = (
   mass, eff, rho,
   offset1, offset2,
   wSpd, wDir,
-  { maxIterations = 500 } = {}
+  options = {}
 ) => {
-  const wr = wDir * (Math.PI / 180)
-  const n1 = ei1 - si1
-  const n2 = ei2 - si2
+  const { maxIterations = 500 } = options
+  const cdaBounds = normalizeBounds(options.cdaBounds, DEFAULT_CDA_BOUNDS)
+  const crrBounds = normalizeBounds(options.crrBounds, DEFAULT_CRR_BOUNDS)
+  const bounds = [cdaBounds, crrBounds]
+  const [fallbackCda, fallbackCrr] = clampParamsToBounds([initialCda, initialCrr], bounds)
+  const range1 = normalizeRangeIndices(getCommonSeriesLength(data1), si1, ei1)
+  const range2 = normalizeRangeIndices(getCommonSeriesLength(data2), si2, ei2)
+  const wr = (Number.isFinite(wDir) ? wDir : 0) * (Math.PI / 180)
+  const windSpeed = Number.isFinite(wSpd) ? wSpd : 0
+
+  if (!range1 || !range2) {
+    const railingDetails = computeRailingDetails(fallbackCda, fallbackCrr, cdaBounds, crrBounds)
+    return {
+      cda: fallbackCda,
+      crr: fallbackCrr,
+      bow1: 0,
+      bow2: 0,
+      netElev1: 0,
+      netElev2: 0,
+      avgSpeed1: 0,
+      avgSpeed2: 0,
+      bounds: { cda: cdaBounds, crr: crrBounds },
+      isRailing: Object.values(railingDetails).some(Boolean),
+      railingDetails
+    }
+  }
+
+  const { si: s1, ei: e1, n: n1 } = range1
+  const { si: s2, ei: e2, n: n2 } = range2
 
   // Calculate virtual elevation for a given file
   // Starts at 0 (arbitrary reference since ground is assumed flat)
-  // Uses physics values from START of each segment (i-1) for proper alignment
   const calcVE = (tc, tr, data, si, ei, offset) => {
-    const { pwr, v, a, ds, ele, b } = data
-    const io = Math.round(offset)
+    const io = Math.round(Number.isFinite(offset) ? offset : 0)
     const vEle = []
     let cur = 0  // Start at 0 (flat ground reference)
     vEle.push(cur)  // vEle[0] = 0, no delta yet
 
     for (let i = si + 1; i < ei; i++) {
-      // Use physics values from start of segment (i-1) since ds[i] spans from i-1 to i
-      const segStart = i - 1
-      const vg = Math.max(0.1, v[segStart])
-      let pi = segStart - io
-      if (pi < si) pi = si        // Clamp to crop start
-      if (pi >= ei) pi = ei - 1   // Clamp to crop end
-      const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
-      const localRho = rho * Math.exp(-ele[segStart] / 9000)
-      const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * tr) - (mass * a[segStart]) - (0.5 * localRho * tc * va * va * Math.sign(va))
-      cur += (f / (mass * GRAVITY)) * ds[i]
+      cur += computeVeStepDelta(data, i, io, wr, mass, eff, rho, tc, tr, windSpeed)
       vEle.push(cur)
     }
     return vEle
@@ -614,8 +892,8 @@ export const solveCdaCrrShenDual = (
   //   1. Net elevation ≈ 0 (flat ground assumption)
   //   2. Bow ≈ 0 (straight line, no curvature)
   const residualFn = ([tc, tr]) => {
-    const vEle1 = calcVE(tc, tr, data1, si1, ei1, offset1)
-    const vEle2 = calcVE(tc, tr, data2, si2, ei2, offset2)
+    const vEle1 = calcVE(tc, tr, data1, s1, e1, offset1)
+    const vEle2 = calcVE(tc, tr, data2, s2, e2, offset2)
 
     // Bow calculations (deviation from straight line)
     const bow1 = calculateBow(vEle1)
@@ -636,21 +914,18 @@ export const solveCdaCrrShenDual = (
     ]
   }
 
-  // Parameter bounds: CdA [0.1, 0.6], Crr [0.001, 0.015]
-  const bounds = [[0.1, 0.6], [0.001, 0.015]]
-
   // Multi-start LM optimization
-  const startPoints = [
+  const startPoints = buildStartPoints([
     [initialCda, initialCrr],
     [0.25, 0.004],
     [0.30, 0.005],
     [0.28, 0.0045],
     [0.22, 0.003],
-  ]
+  ], bounds)
 
   let globalBest = {
-    cda: initialCda,
-    crr: initialCrr,
+    cda: fallbackCda,
+    crr: fallbackCrr,
     cost: Infinity,
     bow1: Infinity,
     bow2: Infinity,
@@ -667,8 +942,9 @@ export const solveCdaCrrShenDual = (
     )
 
     // Calculate metrics for this result
-    const vEle1 = calcVE(result.params[0], result.params[1], data1, si1, ei1, offset1)
-    const vEle2 = calcVE(result.params[0], result.params[1], data2, si2, ei2, offset2)
+    const [fitCda, fitCrr] = clampParamsToBounds(result.params, bounds)
+    const vEle1 = calcVE(fitCda, fitCrr, data1, s1, e1, offset1)
+    const vEle2 = calcVE(fitCda, fitCrr, data2, s2, e2, offset2)
 
     const bow1 = calculateBow(vEle1)
     const bow2 = calculateBow(vEle2)
@@ -677,11 +953,12 @@ export const solveCdaCrrShenDual = (
 
     // Cost: prioritize low bow, then low net elevation
     const cost = Math.abs(bow1) + Math.abs(bow2) + Math.abs(netElev1) * 0.3 + Math.abs(netElev2) * 0.3
+    if (!Number.isFinite(cost)) continue
 
     if (cost < globalBest.cost) {
       globalBest = {
-        cda: result.params[0],
-        crr: result.params[1],
+        cda: fitCda,
+        crr: fitCrr,
         cost,
         bow1,
         bow2,
@@ -692,8 +969,10 @@ export const solveCdaCrrShenDual = (
   }
 
   // Calculate average speeds for each file
-  const avgSpeed1 = data1.v.slice(si1, ei1).reduce((a, b) => a + b, 0) / n1 * 3.6
-  const avgSpeed2 = data2.v.slice(si2, ei2).reduce((a, b) => a + b, 0) / n2 * 3.6
+  const avgSpeed1 = data1.v.slice(s1, e1).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0) / Math.max(1, n1) * 3.6
+  const avgSpeed2 = data2.v.slice(s2, e2).reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0) / Math.max(1, n2) * 3.6
+  const railingDetails = computeRailingDetails(globalBest.cda, globalBest.crr, cdaBounds, crrBounds)
+  const isRailing = Object.values(railingDetails).some(Boolean)
 
   return {
     cda: globalBest.cda,
@@ -703,7 +982,10 @@ export const solveCdaCrrShenDual = (
     netElev1: globalBest.netElev1,
     netElev2: globalBest.netElev2,
     avgSpeed1,
-    avgSpeed2
+    avgSpeed2,
+    bounds: { cda: cdaBounds, crr: crrBounds },
+    isRailing,
+    railingDetails
   }
 }
 
@@ -726,31 +1008,24 @@ export const solveCdaCrrShenDual = (
 // Compute RMSE for a given CdA/Crr combination (optimized for batch calls)
 // ONLY uses data within selected range [si, ei) - treats it as standalone segment
 const computeRMSE = (data, si, ei, cda, crr, mass, eff, rho, offset, wSpd, wDir) => {
-  const { pwr, v, a, ds, ele, b } = data
-  const io = Math.round(offset)
-  const wr = wDir * (Math.PI / 180)
+  const { ele } = data
   const n = ei - si
+  if (n < 2) return Infinity
+  const io = Math.round(Number.isFinite(offset) ? offset : 0)
+  const wr = (Number.isFinite(wDir) ? wDir : 0) * (Math.PI / 180)
+  const windSpeed = Number.isFinite(wSpd) ? wSpd : 0
 
   // Start fresh at GPS elevation of range start
-  let cur = ele[si]
+  let cur = safeArrayValue(ele, si, 0)
   let sqErr = 0
 
   // First point: vEle = ele[si], error = 0
-  // Uses physics values from START of each segment (i-1) for proper alignment
   for (let i = si + 1; i < ei; i++) {
-    const segStart = i - 1
-    const vg = Math.max(0.1, v[segStart])
-    let pi = segStart - io
-    if (pi < si) pi = si        // Clamp to crop start
-    if (pi >= ei) pi = ei - 1   // Clamp to crop end
-    const va = vg + wSpd * Math.cos(b[segStart] * (Math.PI / 180) - wr)
-    const localRho = rho * Math.exp(-ele[segStart] / 9000)
-    const f = (pwr[pi] * eff / vg) - (mass * GRAVITY * crr) - (mass * a[segStart]) - (0.5 * localRho * cda * va * va * Math.sign(va))
-    cur += (f / (mass * GRAVITY)) * ds[i]
-    sqErr += Math.pow(cur - ele[i], 2)
+    cur += computeVeStepDelta(data, i, io, wr, mass, eff, rho, cda, crr, windSpeed)
+    sqErr += Math.pow(cur - safeArrayValue(ele, i, cur), 2)
   }
 
-  return Math.sqrt(sqErr / n)
+  return Math.sqrt(sqErr / Math.max(1, n - 1))
 }
 
 // Main sweep solver - generates 2D CdA/Crr solution space
@@ -768,17 +1043,39 @@ export const solveCdaCrrSweep = (
     crrSteps = 70,
     onProgress = null  // Progress callback: (percent, currentRow, totalRows) => void
   } = options
+  const len = getCommonSeriesLength(data)
+  const range = normalizeRangeIndices(len, si, ei)
+  if (!range) {
+    return Promise.resolve({
+      cdaValues: [],
+      crrValues: [],
+      rmseGrid: [],
+      best: null,
+      minRmse: 0,
+      maxRmse: 0,
+      cdaRange: [cdaMin, cdaMax],
+      crrRange: [crrMin, crrMax]
+    })
+  }
+
+  const { si: sIdx, ei: eIdx, n } = range
+  const cdaLo = Math.min(cdaMin, cdaMax)
+  const cdaHi = Math.max(cdaMin, cdaMax)
+  const crrLo = Math.min(crrMin, crrMax)
+  const crrHi = Math.max(crrMin, crrMax)
+  const cdaStepCount = Math.max(1, Math.floor(cdaSteps))
+  const crrStepCount = Math.max(1, Math.floor(crrSteps))
 
   return new Promise((resolve) => {
     // Create grid of CdA and Crr values
     const cdaValues = []
     const crrValues = []
 
-    for (let i = 0; i <= cdaSteps; i++) {
-      cdaValues.push(cdaMin + (i / cdaSteps) * (cdaMax - cdaMin))
+    for (let i = 0; i <= cdaStepCount; i++) {
+      cdaValues.push(cdaLo + (i / cdaStepCount) * (cdaHi - cdaLo))
     }
-    for (let j = 0; j <= crrSteps; j++) {
-      crrValues.push(crrMin + (j / crrSteps) * (crrMax - crrMin))
+    for (let j = 0; j <= crrStepCount; j++) {
+      crrValues.push(crrLo + (j / crrStepCount) * (crrHi - crrLo))
     }
 
     // Compute RMSE for each (CdA, Crr) combination
@@ -789,7 +1086,7 @@ export const solveCdaCrrSweep = (
     let maxRmse = 0
 
     let currentRow = 0
-    const totalRows = cdaSteps + 1
+    const totalRows = cdaStepCount + 1
 
     // Process rows in chunks to allow UI updates
     const processChunk = () => {
@@ -798,8 +1095,8 @@ export const solveCdaCrrSweep = (
 
       for (let i = currentRow; i < endRow; i++) {
         const row = []
-        for (let j = 0; j <= crrSteps; j++) {
-          const rmse = computeRMSE(data, si, ei, cdaValues[i], crrValues[j], mass, eff, rho, offset, wSpd, wDir)
+        for (let j = 0; j <= crrStepCount; j++) {
+          const rmse = computeRMSE(data, sIdx, eIdx, cdaValues[i], crrValues[j], mass, eff, rho, offset, wSpd, wDir)
           row.push(rmse)
 
           minRmse = Math.min(minRmse, rmse)
@@ -827,17 +1124,16 @@ export const solveCdaCrrSweep = (
       } else {
         // Done - compute R² for best solution and resolve
         if (bestSolution) {
-          const n = ei - si
           let eleSum = 0
-          for (let i = si; i < ei; i++) eleSum += data.ele[i]
-          const eleMean = eleSum / n
+          for (let i = sIdx; i < eIdx; i++) eleSum += safeArrayValue(data.ele, i, 0)
+          const eleMean = eleSum / Math.max(1, n)
 
           let ssTot = 0
-          for (let i = si; i < ei; i++) {
-            ssTot += Math.pow(data.ele[i] - eleMean, 2)
+          for (let i = sIdx; i < eIdx; i++) {
+            ssTot += Math.pow(safeArrayValue(data.ele, i, eleMean) - eleMean, 2)
           }
 
-          const ssRes = bestRmse * bestRmse * n
+          const ssRes = bestRmse * bestRmse * Math.max(1, n - 1)
           bestSolution.r2 = ssTot > 0 ? 1 - (ssRes / ssTot) : 0
         }
 
@@ -848,8 +1144,8 @@ export const solveCdaCrrSweep = (
           best: bestSolution,
           minRmse,
           maxRmse,
-          cdaRange: [cdaMin, cdaMax],
-          crrRange: [crrMin, crrMax]
+          cdaRange: [cdaLo, cdaHi],
+          crrRange: [crrLo, crrHi]
         })
       }
     }
@@ -920,6 +1216,7 @@ export const checkSteadyAcceleration = (data, si, ei) => {
 // Calculate net force on rider at given velocity and conditions
 // Returns force in Newtons (positive = accelerating, negative = decelerating)
 export const calculateNetForce = (power, velocity, grade, mass, cda, crr, rho, eff, elevation = 0, windSpeed = 0) => {
+  void elevation // Retained for backward-compatible signature.
   // Minimum velocity to avoid division by zero
   const v = Math.max(0.5, velocity)
 
@@ -936,16 +1233,10 @@ export const calculateNetForce = (power, velocity, grade, mass, cda, crr, rho, e
   // Rolling resistance (always opposes motion)
   const F_rolling = mass * GRAVITY * crr * Math.cos(theta)
 
-  // Air density adjusted for altitude
-  let localRho = rho
-  if (elevation > 0) {
-    localRho = rho * Math.exp(-elevation / 9000)
-  }
-
   // Aerodynamic drag
   // Apparent air velocity = ground velocity + headwind (positive = headwind)
   const v_air = v + windSpeed
-  const F_aero = 0.5 * localRho * cda * v_air * Math.abs(v_air)
+  const F_aero = 0.5 * rho * cda * v_air * Math.abs(v_air)
 
   // Net force: propulsion minus all resistance
   const F_net = F_propulsion - F_gravity - F_rolling - F_aero
@@ -955,15 +1246,20 @@ export const calculateNetForce = (power, velocity, grade, mass, cda, crr, rho, e
 
 // Get gradient and elevation at any position along route via interpolation
 export const getGradientAtPosition = (routeData, position) => {
+  if (!routeData || !Array.isArray(routeData.segments) || routeData.segments.length === 0) {
+    return { grade: 0, elevation: 0, bearing: 0 }
+  }
+
   const { segments, cumDist } = routeData
 
   // Handle edge cases
   if (position <= 0) {
-    return { grade: segments[0].g, elevation: segments[0].ele }
+    const seg = segments[0]
+    return { grade: seg.g, elevation: seg.ele, bearing: seg.bearing ?? 0 }
   }
   if (position >= routeData.totalDist) {
     const last = segments[segments.length - 1]
-    return { grade: last.g, elevation: last.ele }
+    return { grade: last.g, elevation: last.ele, bearing: last.bearing ?? 0 }
   }
 
   // Binary search to find the segment containing this position
@@ -994,6 +1290,18 @@ export const getGradientAtPosition = (routeData, position) => {
 // Main route simulation using time-step integration
 // Models realistic rider behavior with momentum, coasting, and speed limits
 export const simulateRoute = (routeData, config) => {
+  if (!routeData || !Array.isArray(routeData.segments) || routeData.segments.length === 0 || !Number.isFinite(routeData.totalDist) || routeData.totalDist <= 0) {
+    return {
+      time: 0,
+      avgSpeed: 0,
+      maxSpeed: 0,
+      coastingTime: 0,
+      coastingPercent: 0,
+      distance: 0,
+      completed: false
+    }
+  }
+
   const {
     power,
     mass,
@@ -1036,7 +1344,7 @@ export const simulateRoute = (routeData, config) => {
     // 2. Calculate effective wind speed based on bearing
     // Wind component in direction of travel (positive = headwind)
     let effectiveWind = 0
-    if (windSpeed > 0 && bearing !== undefined) {
+    if (windSpeed !== 0 && bearing !== undefined) {
       const bearingRad = bearing * (Math.PI / 180)
       // Wind blowing FROM windDir, so headwind when bearing matches windDir
       effectiveWind = windSpeed * Math.cos(bearingRad - windDirRad)
@@ -1066,28 +1374,39 @@ export const simulateRoute = (routeData, config) => {
     }
 
     // 7. Update velocity
-    velocity = velocity + accel * dt
+    velocity = Math.max(0.1, velocity + accel * dt)
 
     // 8. Apply minimum speed on climbs (don't go below walking pace)
-    if (velocity < minClimbSpeed) {
+    if (grade > 0 && velocity < minClimbSpeed) {
       velocity = minClimbSpeed
     }
 
     // 9. Track statistics
     maxSpeedReached = Math.max(maxSpeedReached, velocity)
-    if (isCoasting) coastingTime += dt
 
-    // 10. Update position and time
-    position += velocity * dt
-    time += dt
+    // 10. Update position and time. Use partial final step to avoid finish-time bias.
+    const remainingDist = routeData.totalDist - position
+    const stepDist = velocity * dt
+    const stepTime = stepDist > remainingDist ? (remainingDist / Math.max(velocity, 0.1)) : dt
+    const actualStepDist = Math.min(stepDist, remainingDist)
+
+    if (isCoasting) coastingTime += stepTime
+
+    position += actualStepDist
+    time += stepTime
   }
 
+  const completed = position >= routeData.totalDist - 1e-6
+  const distanceCovered = Math.min(position, routeData.totalDist)
+  const finalTime = completed ? time : Infinity
+
   return {
-    time,
-    avgSpeed: routeData.totalDist / time,
+    time: finalTime,
+    avgSpeed: completed && time > 0 ? routeData.totalDist / time : 0,
     maxSpeed: maxSpeedReached,
     coastingTime,
     coastingPercent: time > 0 ? (coastingTime / time) * 100 : 0,
-    distance: routeData.totalDist
+    distance: distanceCovered,
+    completed
   }
 }

@@ -8,7 +8,9 @@ import { ConfirmDialog } from '../ui'
 
 const StudyCard = ({ study, onClick, onDelete }) => {
   const varType = getVariableType(study.variable_type)
-  const isAveraging = study.study_mode === 'averaging'
+  const variableLabel = study.variable_label || varType.label
+  const variationCount = study.variation_count || 0
+  const variationLabel = `${variationCount} configuration${variationCount === 1 ? '' : 's'}`
 
   const handleDelete = (e) => {
     e.stopPropagation() // Prevent card click
@@ -21,12 +23,8 @@ const StudyCard = ({ study, onClick, onDelete }) => {
         <button onClick={onClick} className="flex-1 text-left">
           <h3 className="font-bold text-white mb-1">{study.name}</h3>
           <div className="flex items-center gap-3 text-xs text-gray-400">
-            <span className={`px-2 py-0.5 rounded ${isAveraging ? 'bg-blue-900/30 text-blue-400' : 'bg-dark-bg'}`}>
-              {isAveraging ? 'Averaging' : varType.label}
-            </span>
-            {!isAveraging && (
-              <span>{study.variation_count || 0} configurations</span>
-            )}
+            <span className="px-2 py-0.5 rounded bg-dark-bg">{variableLabel}</span>
+            <span>{variationLabel}</span>
             <span className="text-gray-500">{study.mass}kg</span>
           </div>
           {study.description && (
@@ -56,13 +54,12 @@ export const StudiesTab = ({ initialStudyId, onStudyOpened, presetsHook }) => {
   const { user } = useAuth()
   const { studies, loading, createStudy, deleteStudy } = useStudies()
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [viewingStudyId, setViewingStudyId] = useState(null)
+  const [viewingStudyId, setViewingStudyId] = useState(() => initialStudyId || null)
   const [deleteDialog, setDeleteDialog] = useState({ open: false, study: null })
 
   // Handle navigation from Dashboard
   useEffect(() => {
     if (initialStudyId) {
-      setViewingStudyId(initialStudyId)
       onStudyOpened?.()
     }
   }, [initialStudyId, onStudyOpened])
@@ -127,7 +124,7 @@ export const StudiesTab = ({ initialStudyId, onStudyOpened, presetsHook }) => {
       <div className="flex justify-between items-center mb-6">
         <div>
           <h2 className="text-2xl font-bold text-white">Studies</h2>
-          <p className="text-gray-400 text-sm">Test and compare equipment variables</p>
+          <p className="text-gray-400 text-sm">Build a baseline and compare equipment setups</p>
         </div>
         <button
           onClick={() => setShowCreateModal(true)}

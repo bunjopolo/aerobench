@@ -7,7 +7,7 @@ export default {
   theme: {
     extend: {
       fontSize: {
-        'xxs': ['10px', '14px'],
+        'xxs': ['11px', '16px'],
       },
       colors: {
         dark: {

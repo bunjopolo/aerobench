@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '../../hooks/useAuth.jsx'
-import { AlertDialog } from '../ui'
+import { AlertDialog, Dialog } from '../ui'
 
 export const UserMenu = () => {
   const { user, signOut, deleteAccount } = useAuth()
@@ -77,9 +77,14 @@ export const UserMenu = () => {
       )}
 
       {/* Settings Modal */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-md mx-4 animate-fade-in">
+      <Dialog
+        isOpen={showSettings}
+        onClose={() => {
+          setShowSettings(false)
+          setConfirmDelete(false)
+          setDeleteText('')
+        }}
+      >
             <div className="flex justify-between items-center p-4 border-b border-dark-border">
               <h2 className="text-lg font-bold text-white">Settings</h2>
               <button
@@ -171,9 +176,7 @@ export const UserMenu = () => {
                 </div>
               </div>
             </div>
-          </div>
-        </div>
-      )}
+      </Dialog>
 
       {/* Error Alert Dialog */}
       <AlertDialog

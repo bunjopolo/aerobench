@@ -5,8 +5,9 @@
 body {
   margin: 0;
   background-color: #0f172a;
-  color: #e2e8f0;
+  color: #e5e7eb;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
 }
 
 /* Custom Scrollbar */
@@ -55,15 +56,16 @@ input[type=range]:active::-moz-range-thumb { transform: scale(1.2); background: 
 }
 
 .label-sm {
-  @apply text-xs text-slate-400 font-medium uppercase tracking-wider;
+  @apply text-xs text-slate-300 font-semibold uppercase tracking-wider;
 }
 
 .input-dark {
-  @apply bg-dark-input border border-dark-border text-white rounded-md px-2 py-1 text-sm transition-colors;
+  @apply bg-dark-input border border-dark-border text-slate-100 rounded-md px-2.5 py-1.5 text-sm transition-colors;
 }
 .input-dark:focus {
-  @apply border-brand-primary outline-none;
+  @apply border-brand-primary outline-none ring-1 ring-brand-primary/30;
 }
+.input-dark::placeholder { color: #94a3b8; }
 
 .btn-primary {
   @apply bg-indigo-600 text-white rounded-lg px-4 py-2 font-semibold text-sm transition-all border-none cursor-pointer;

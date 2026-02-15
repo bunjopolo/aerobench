@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState } from 'react'
 import { useAuth } from '../../hooks/useAuth.jsx'
 import { parseRouteGPX } from '../../lib/activityFileParser'
 import { solveVelocity, simulateRoute, safeNum, GRAVITY } from '../../lib/physics'
@@ -22,7 +22,7 @@ const calculatePowerBreakdown = (velocity, power, grade, mass, cda, crr, rho, ef
   // Aero power (including wind effect)
   // windSpeed positive = headwind, negative = tailwind
   const vAir = v + windSpeed
-  const aeroPower = 0.5 * rho * cda * vAir * vAir * v
+  const aeroPower = 0.5 * rho * cda * vAir * Math.abs(vAir) * v
 
   return {
     aero: aeroPower,
@@ -34,7 +34,7 @@ const calculatePowerBreakdown = (velocity, power, grade, mass, cda, crr, rho, ef
 }
 
 // Power breakdown bar component
-const PowerBreakdown = ({ breakdown, power }) => {
+const PowerBreakdown = ({ breakdown }) => {
   const { aero, rolling, gravity, drivetrain } = breakdown
 
   // Only show positive resistance components for the bar
@@ -157,6 +157,7 @@ export const EstimatorTab = ({ presetsHook }) => {
 
   // Route data
   const [routeData, setRouteData] = useState(null)
+  const [routeError, setRouteError] = useState('')
 
   // Calculate effective wind speed based on direction
   const getEffectiveWind = () => {
@@ -177,6 +178,16 @@ export const EstimatorTab = ({ presetsHook }) => {
       const time = vMs > 0 ? (estDist * 1000) / vMs : 0
       return { vKph: vMs * 3.6, time }
     } else if (routeData) {
+      if (!routeData.segments?.length || routeData.totalDist <= 0) {
+        return {
+          time: 0,
+          vKph: 0,
+          maxSpeed: 0,
+          coastingTime: 0,
+          coastingPercent: 0
+        }
+      }
+
       // Use time-step simulation for realistic route estimation
       const result = simulateRoute(routeData, {
         power: estPwr,
@@ -206,27 +217,45 @@ export const EstimatorTab = ({ presetsHook }) => {
   }
 
   // Results for current values
-  const currentRes = useMemo(() => {
-    return calculateResult(cda, crr, mass)
-  }, [estPwr, estGrade, estDist, cda, crr, mass, rho, eff, mode, routeData, windSpeed, windDirection, routeWindSpeed, routeWindDir, coastSpeed, maxDescentSpeed, minClimbSpeed])
+  const currentRes = calculateResult(cda, crr, mass)
 
   // Power breakdown (for manual mode)
-  const powerBreakdown = useMemo(() => {
-    if (mode === 'manual' && currentRes && currentRes.vKph > 0) {
-      const velocityMs = currentRes.vKph / 3.6
-      const effectiveWind = getEffectiveWind()
-      return calculatePowerBreakdown(velocityMs, estPwr, estGrade, mass, cda, crr, rho, eff, effectiveWind)
-    }
-    return null
-  }, [mode, currentRes, estPwr, estGrade, mass, cda, crr, rho, eff, windSpeed, windDirection])
+  const powerBreakdown = mode === 'manual' && currentRes && currentRes.vKph > 0
+    ? calculatePowerBreakdown(
+      currentRes.vKph / 3.6,
+      estPwr,
+      estGrade,
+      mass,
+      cda,
+      crr,
+      rho,
+      eff,
+      getEffectiveWind()
+    )
+    : null
 
   const onRouteFile = (e) => {
     const f = e.target.files[0]
     if (!f) return
     const r = new FileReader()
     r.onload = (ev) => {
-      const result = parseRouteGPX(ev.target.result)
-      setRouteData(result)
+      try {
+        const result = parseRouteGPX(ev.target.result)
+        if (!result?.segments?.length || !Number.isFinite(result.totalDist) || result.totalDist <= 0) {
+          setRouteData(null)
+          setRouteError('No valid route segments found in this GPX. Try a file with track points and elevation.')
+          return
+        }
+        setRouteError('')
+        setRouteData(result)
+      } catch {
+        setRouteData(null)
+        setRouteError('Could not parse this GPX file. Please verify the file format.')
+      }
+    }
+    r.onerror = () => {
+      setRouteData(null)
+      setRouteError('Failed to read the selected route file.')
     }
     r.readAsText(f)
   }
@@ -240,38 +269,37 @@ export const EstimatorTab = ({ presetsHook }) => {
   }
 
   // Sensitivity table
-  const sensitivity = useMemo(() => {
-    return [-20, -10, 0, 10, 20].map(delta => {
-      const w = estPwr + delta
-      let t = 0, s = 0
+  const sensitivity = [-20, -10, 0, 10, 20].map(delta => {
+    const w = estPwr + delta
+    let t = 0
+    let s = 0
 
-      if (mode === 'manual') {
-        const v = solveV(w, estGrade, mass, cda, crr)
-        t = v > 0 ? (estDist * 1000) / v : 0
-        s = v * 3.6
-      } else if (routeData) {
-        // Use time-step simulation for sensitivity
-        const result = simulateRoute(routeData, {
-          power: w,
-          mass: mass,
-          cda: cda,
-          crr: crr,
-          rho: rho,
-          eff: eff,
-          windSpeed: routeWindSpeed,
-          windDir: routeWindDir,
-          options: {
-            coastSpeed: coastSpeed / 3.6,
-            maxDescentSpeed: maxDescentSpeed / 3.6,
-            minClimbSpeed: minClimbSpeed / 3.6
-          }
-        })
-        t = result.time
-        s = result.avgSpeed * 3.6
-      }
-      return { w, kph: s, time: t }
-    })
-  }, [estPwr, estGrade, estDist, mass, mode, routeData, cda, crr, rho, eff, routeWindSpeed, routeWindDir, coastSpeed, maxDescentSpeed, minClimbSpeed])
+    if (mode === 'manual') {
+      const v = solveV(w, estGrade, mass, cda, crr)
+      t = v > 0 ? (estDist * 1000) / v : 0
+      s = v * 3.6
+    } else if (routeData) {
+      // Use time-step simulation for sensitivity
+      const result = simulateRoute(routeData, {
+        power: w,
+        mass: mass,
+        cda: cda,
+        crr: crr,
+        rho: rho,
+        eff: eff,
+        windSpeed: routeWindSpeed,
+        windDir: routeWindDir,
+        options: {
+          coastSpeed: coastSpeed / 3.6,
+          maxDescentSpeed: maxDescentSpeed / 3.6,
+          minClimbSpeed: minClimbSpeed / 3.6
+        }
+      })
+      t = result.time
+      s = result.avgSpeed * 3.6
+    }
+    return { w, kph: s, time: t }
+  })
 
   if (!user) {
     return (
@@ -546,6 +574,9 @@ export const EstimatorTab = ({ presetsHook }) => {
                     ) : (
                       <p className="text-xs text-gray-500 mt-1">Select a route file</p>
                     )}
+                    {routeError && (
+                      <p className="text-xs text-red-400 mt-2">{routeError}</p>
+                    )}
                   </div>
 
                   {/* Wind for route */}
@@ -650,7 +681,7 @@ export const EstimatorTab = ({ presetsHook }) => {
           {mode === 'manual' && powerBreakdown && (
             <div className="bg-dark-card p-5 rounded-xl border border-dark-border">
               <h3 className="text-xs font-bold text-gray-400 uppercase mb-4">Power Breakdown</h3>
-              <PowerBreakdown breakdown={powerBreakdown} power={estPwr} />
+              <PowerBreakdown breakdown={powerBreakdown} />
             </div>
           )}
 

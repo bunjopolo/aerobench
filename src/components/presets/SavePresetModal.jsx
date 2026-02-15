@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Dialog } from '../ui'
 
 export const SavePresetModal = ({ values, onSave, onClose }) => {
   const [name, setName] = useState('')
@@ -31,8 +32,7 @@ export const SavePresetModal = ({ values, onSave, onClose }) => {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-dark-card rounded-xl border border-dark-border w-full max-w-md animate-fade-in">
+    <Dialog isOpen={true} onClose={loading ? undefined : onClose}>
         <div className="p-6 border-b border-dark-border">
           <h2 className="text-xl font-bold text-white">Save Physics Preset</h2>
           <p className="text-gray-400 text-sm mt-1">Save these values to quickly load them in the Estimator</p>
@@ -104,7 +104,6 @@ export const SavePresetModal = ({ values, onSave, onClose }) => {
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </Dialog>
   )
 }
