@@ -6,7 +6,7 @@ export const CreateStudyModal = ({ onClose, onCreate }) => {
   const [form, setForm] = useState({
     name: '',
     description: '',
-    variable_type: 'tire_pressure',
+    variable_type: 'none',
     variable_label: '',
     mass: '80',
     drivetrain_efficiency: '0.97'

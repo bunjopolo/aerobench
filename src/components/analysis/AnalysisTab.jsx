@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { parseActivityFile } from '../../lib/gpxParser'
 import { solveCdaCrr, safeNum, GRAVITY } from '../../lib/physics'
+import { fetchRideWeatherSnapshot } from '../../lib/weather'
 import { useAnalyses } from '../../hooks/useAnalyses'
 import { AlertDialog } from '../ui'
 
@@ -33,11 +34,13 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
   const [fileName, setFileName] = useState(null)
   const [hasPowerData, setHasPowerData] = useState(true)
   const [lapMarkers, setLapMarkers] = useState([])
+  const [speedSource, setSpeedSource] = useState('wheel')
 
   // Environment
   const [wSpd, setWSpd] = useState(0)
   const [wDir, setWDir] = useState(0)
-  const offset = 0
+  const [powerOffset, setPowerOffset] = useState(0)
+  const offset = powerOffset
   const [range, setRange] = useState([0, 100])
 
   // Solver
@@ -53,6 +56,26 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
 
   // Error dialog state
   const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
+
+  const wheelSpeedAvailable = Boolean(
+    data?.hasWheelSpeed &&
+    Array.isArray(data?.vWheel) &&
+    Array.isArray(data?.aWheel)
+  )
+
+  const dataForSolve = useMemo(() => {
+    if (!data) return null
+    if (speedSource === 'wheel' && wheelSpeedAvailable) {
+      return { ...data, v: data.vWheel, a: data.aWheel }
+    }
+    return { ...data, v: data.vGps || data.v, a: data.aGps || data.a }
+  }, [data, speedSource, wheelSpeedAvailable])
+
+  useEffect(() => {
+    if (speedSource === 'wheel' && data && !wheelSpeedAvailable) {
+      setSpeedSource('gps')
+    }
+  }, [speedSource, wheelSpeedAvailable, data])
 
   // Variable smoothing function - applies moving average with adjustable window
   const smoothData = (arr, level) => {
@@ -85,8 +108,10 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
           if (session.crr != null) setCrr(session.crr)
           if (session.wSpd != null) setWSpd(session.wSpd)
           if (session.wDir != null) setWDir(session.wDir)
+          if (session.powerOffset != null) setPowerOffset(session.powerOffset)
           if (session.range) setRange(session.range)
           if (session.maxIterations != null) setMaxIterations(session.maxIterations)
+          if (session.speedSource === 'gps' || session.speedSource === 'wheel') setSpeedSource(session.speedSource)
         }
       }
     } catch (e) {
@@ -109,6 +134,8 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
         crr,
         wSpd,
         wDir,
+        powerOffset,
+        speedSource,
         range,
         maxIterations
       }
@@ -116,7 +143,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     } catch (e) {
       console.warn('Failed to save analysis session:', e)
     }
-  }, [data, fileName, startTime, hasPowerData, lapMarkers, cda, crr, wSpd, wDir, range, maxIterations, selectedSetupId])
+  }, [data, fileName, startTime, hasPowerData, lapMarkers, cda, crr, wSpd, wDir, powerOffset, speedSource, range, maxIterations, selectedSetupId])
 
   useEffect(() => {
     saveSession()
@@ -183,19 +210,21 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     setCrr(selectedSetup?.crr ?? 0.004)
     setWSpd(0)
     setWDir(0)
+    setPowerOffset(0)
     setRange([0, 100])
     setMaxIterations(500)
     setSmoothFilter(false)
     setSmoothAmount(3)
     setHasPowerData(true)
     setLapMarkers([])
+    setSpeedSource('wheel')
   }
 
   // Simulation calculation - compute virtual elevation for SELECTED RANGE ONLY
   // Starts fresh at ele[sIdx], treats cropped region as standalone segment
   const sim = useMemo(() => {
-    if (!data) return null
-    const { pwr, v, a, ds, ele, b } = data
+    if (!dataForSolve) return null
+    const { pwr, v, a, ds, ele, b } = dataForSolve
     const sIdx = Math.floor((range[0] / 100) * pwr.length)
     const eIdx = Math.floor((range[1] / 100) * pwr.length)
 
@@ -269,14 +298,14 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
 
     return { vEle, err, sIdx, eIdx, rmse, r2 }
-  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
+  }, [dataForSolve, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
 
   // Solvers
   const runGlobal = () => {
-    if (!data) return
+    if (!dataForSolve || !sim) return
     setBusy(true)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
+      const res = solveCdaCrr(dataForSolve, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, { method: 'chung', maxIterations })
       setCda(res.cda)
       setCrr(res.crr)
       setBusy(false)
@@ -288,28 +317,25 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     setFetchingW(true)
     setWeatherError(null)
     try {
-      const mid = Math.floor(data.lat.length / 2)
-      const ds = startTime.toISOString().split('T')[0]
-      const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m`
-      const r = await fetch(u)
-      if (!r.ok) throw new Error('Weather service unavailable')
-      const j = await r.json()
-      if (j.hourly) {
-        const h = startTime.getUTCHours()
-        if (j.hourly.wind_speed_10m[h] !== undefined) {
-          setWSpd(parseFloat((j.hourly.wind_speed_10m[h] / 3.6 * 0.6).toFixed(2)))
-          setWDir(j.hourly.wind_direction_10m[h])
-        } else {
-          setWeatherError('No data for this time')
-        }
+      const len = Array.isArray(data.dist) ? data.dist.length : 0
+      const sIdx = len > 0 ? Math.max(0, Math.min(len - 1, Math.floor((range[0] / 100) * len))) : 0
+      const selectedStartTime = Array.isArray(data.t) && Number.isFinite(data.t[sIdx])
+        ? new Date(startTime.getTime() + data.t[sIdx] * 1000)
+        : startTime
+
+      const wx = await fetchRideWeatherSnapshot({ data, startTime: selectedStartTime, sampleIndex: sIdx })
+      if (Number.isFinite(wx.windSpeedRiderMs)) {
+        setWSpd(wx.windSpeedRiderMs)
+        if (Number.isFinite(wx.windDirectionDeg)) setWDir(wx.windDirectionDeg)
       } else {
-        setWeatherError('No weather data available')
+        setWeatherError('No wind data for this time')
       }
     } catch (e) {
       console.error(e)
-      setWeatherError('Failed to fetch weather')
+      setWeatherError(e?.message || 'Failed to fetch weather')
+    } finally {
+      setFetchingW(false)
     }
-    setFetchingW(false)
   }
 
   // Calculate distance ranges from percentage ranges
@@ -514,6 +540,60 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
               <h3 className="label-sm mb-3">Solver</h3>
 
               <div className="mb-3">
+                <label className="text-xxs text-gray-500 mb-1 block">Speed Source</label>
+                <div className="flex bg-dark-input p-0.5 rounded border border-dark-border">
+                  <button
+                    onClick={() => wheelSpeedAvailable && setSpeedSource('wheel')}
+                    disabled={!wheelSpeedAvailable}
+                    className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${speedSource === 'wheel' ? 'bg-cyan-600 text-white' : 'text-gray-400'} ${!wheelSpeedAvailable ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    Speed Sensor
+                  </button>
+                  <button
+                    onClick={() => setSpeedSource('gps')}
+                    className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${speedSource === 'gps' ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                  >
+                    GPS
+                  </button>
+                </div>
+                <p className="text-xxs text-gray-500 mt-1">
+                  {wheelSpeedAvailable
+                    ? `Using ${speedSource === 'wheel' ? 'speed sensor' : 'GPS'} speed for solver and VE.`
+                    : 'Speed sensor data not available in this file.'}
+                </p>
+                {speedSource === 'gps' && (
+                  <p className="text-xxs text-yellow-400 mt-1">
+                    Warning: GPS speed is less reliable and may reduce CdA/Crr accuracy.
+                  </p>
+                )}
+              </div>
+
+              <div className="mb-3">
+                <label className="text-xxs text-gray-500 mb-1 block">Power Offset (samples)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="-20"
+                    max="20"
+                    step="1"
+                    value={powerOffset}
+                    onChange={e => setPowerOffset(parseInt(e.target.value, 10))}
+                    className="w-full accent-indigo-500"
+                  />
+                  <input
+                    type="number"
+                    min="-20"
+                    max="20"
+                    step="1"
+                    value={powerOffset}
+                    onChange={e => setPowerOffset(Math.max(-20, Math.min(20, Math.round(safeNum(e.target.value, powerOffset)))))}
+                    className="input-dark w-16 text-center"
+                  />
+                </div>
+                <p className="text-xxs text-gray-500 mt-1">Positive values advance power; negative values delay power. Use this to correct lag from power meter data.</p>
+              </div>
+
+              <div className="mb-3">
                 <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
                 <div className="flex gap-2">
                   <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark flex-1" />
@@ -571,6 +651,9 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
                   {fetchingW ? '...' : 'Fetch Wind'}
                 </button>
               </div>
+              <p className="text-xxs text-gray-500 mb-2">
+                Weather source: Open-Meteo archive API.
+              </p>
               {weatherError && (
                 <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
               )}

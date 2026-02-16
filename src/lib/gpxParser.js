@@ -1,6 +1,23 @@
 import { haversine, calcBearing, savgol } from './physics'
 import FitParser from 'fit-file-parser'
 
+const parseGpxExtensionSpeed = (extNode) => {
+  if (!extNode) return null
+
+  const candidates = ['speed', 'ns3:speed', 'gpxtpx:speed', 'ns2:speed']
+  for (const tag of candidates) {
+    const node = extNode.getElementsByTagName(tag)[0]
+    if (!node) continue
+    const raw = parseFloat(node.textContent)
+    if (!Number.isFinite(raw)) continue
+    if (raw < 0) return null
+    // GPX speed extensions are usually m/s; handle occasional km/h exports.
+    return raw > 25 ? raw / 3.6 : raw
+  }
+
+  return null
+}
+
 const computeAcceleration = (time, velocity) => {
   const acc = new Array(velocity.length).fill(0)
   for (let i = 1; i < velocity.length - 1; i++) {
@@ -45,6 +62,8 @@ export const parseFIT = (arrayBuffer) => {
         const lon = rec.position_long
         const ele = rec.altitude || rec.enhanced_altitude || 0
         const pwr = rec.power || 0
+        const speedRec = rec.enhanced_speed ?? rec.speed
+        const spd = Number.isFinite(speedRec) && speedRec >= 0 ? speedRec : null
         const tObj = rec.timestamp ? new Date(rec.timestamp) : null
 
         if (!tObj || isNaN(tObj.getTime())) continue
@@ -62,7 +81,7 @@ export const parseFIT = (arrayBuffer) => {
 
         pts.push({
           t: (tObj - st) / 1000,
-          lat, lon, ele, pwr, cum, ds, b
+          lat, lon, ele, pwr, spd, cum, ds, b
         })
 
         pLat = lat
@@ -77,8 +96,12 @@ export const parseFIT = (arrayBuffer) => {
 
       const t = pts.map(d => d.t)
       const vRaw = pts.map((d, i) => i === 0 ? 0 : d.ds / Math.max(0.05, t[i] - t[i - 1]))
-      const vSm = savgol(vRaw)
-      const acc = computeAcceleration(t, vSm)
+      const vGps = savgol(vRaw)
+      const aGps = computeAcceleration(t, vGps)
+      const wheelSpeedPointCount = pts.filter(d => Number.isFinite(d.spd)).length
+      const hasWheelSpeed = pts.length > 0 && wheelSpeedPointCount / pts.length > 0.5
+      const vWheel = hasWheelSpeed ? savgol(pts.map((d, i) => Number.isFinite(d.spd) ? d.spd : vGps[i])) : null
+      const aWheel = hasWheelSpeed ? computeAcceleration(t, vWheel) : null
 
       const hasPowerData = pts.length > 0 && powerPointCount / pts.length > 0.5
 
@@ -112,13 +135,19 @@ export const parseFIT = (arrayBuffer) => {
 
       resolve({
         data: {
+          t: pts.map(d => d.t),
           dist: pts.map(d => d.cum),
           pwr: pts.map(d => d.pwr),
           ele: pts.map(d => d.ele),
           lat: pts.map(d => d.lat),
           lon: pts.map(d => d.lon),
-          v: vSm,
-          a: acc,
+          v: vGps,
+          a: aGps,
+          vGps,
+          aGps,
+          vWheel,
+          aWheel,
+          hasWheelSpeed,
           b: pts.map(d => d.b),
           ds: pts.map(d => d.ds)
         },
@@ -184,6 +213,7 @@ export const parseGPX = (xmlString) => {
 
     let pwr = 0
     const ext = pt.getElementsByTagName("extensions")[0]
+    const spd = parseGpxExtensionSpeed(ext)
     if (ext) {
       const w = ext.getElementsByTagName("watts")[0] ||
                 ext.getElementsByTagName("power")[0] ||
@@ -200,7 +230,7 @@ export const parseGPX = (xmlString) => {
       b = calcBearing(pLat * Math.PI / 180, pLon * Math.PI / 180, lat * Math.PI / 180, lon * Math.PI / 180)
     }
     cum += ds
-    pts.push({ t: (tObj - st) / 1000, lat, lon, ele, pwr, cum, ds, b })
+    pts.push({ t: (tObj - st) / 1000, lat, lon, ele, pwr, spd, cum, ds, b })
     pLat = lat
     pLon = lon
     pTime = tObj
@@ -208,21 +238,31 @@ export const parseGPX = (xmlString) => {
 
   const t = pts.map(d => d.t)
   const vRaw = pts.map((d, i) => i === 0 ? 0 : d.ds / Math.max(0.05, t[i] - t[i - 1]))
-  const vSm = savgol(vRaw)
-  const acc = computeAcceleration(t, vSm)
+  const vGps = savgol(vRaw)
+  const aGps = computeAcceleration(t, vGps)
+  const wheelSpeedPointCount = pts.filter(d => Number.isFinite(d.spd)).length
+  const hasWheelSpeed = pts.length > 0 && wheelSpeedPointCount / pts.length > 0.5
+  const vWheel = hasWheelSpeed ? savgol(pts.map((d, i) => Number.isFinite(d.spd) ? d.spd : vGps[i])) : null
+  const aWheel = hasWheelSpeed ? computeAcceleration(t, vWheel) : null
 
   // Determine if file has meaningful power data (at least 50% of points)
   const hasPowerData = pts.length > 0 && powerPointCount / pts.length > 0.5
 
   return {
     data: {
+      t: pts.map(d => d.t),
       dist: pts.map(d => d.cum),
       pwr: pts.map(d => d.pwr),
       ele: pts.map(d => d.ele),
       lat: pts.map(d => d.lat),
       lon: pts.map(d => d.lon),
-      v: vSm,
-      a: acc,
+      v: vGps,
+      a: aGps,
+      vGps,
+      aGps,
+      vWheel,
+      aWheel,
+      hasWheelSpeed,
       b: pts.map(d => d.b),
       ds: pts.map(d => d.ds)
     },

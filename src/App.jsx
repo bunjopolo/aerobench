@@ -9,7 +9,6 @@ import { DashboardTab } from './components/dashboard/DashboardTab'
 import { StudiesTab } from './components/studies/StudiesTab'
 import { QuickTestTab } from './components/quicktest/QuickTestTab'
 import { GuideTab } from './components/guide/GuideTab'
-import { ValidationTab } from './components/validation/ValidationTab'
 import { AdminTab } from './components/admin/AdminTab'
 import { PrivacyPolicy, TermsOfService, CookieNotice } from './components/legal'
 import { ContactModal } from './components/ui'
@@ -51,18 +50,13 @@ const AppContent = () => {
     },
     {
       id: 'estimator',
-      label: 'Estimator',
+      label: 'Course Simulator',
       iconPath: 'M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z'
     },
     {
       id: 'guide',
       label: 'Guide',
       iconPath: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253'
-    },
-    {
-      id: 'validation',
-      label: 'Validation',
-      iconPath: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'
     },
     ...(isAdmin ? [{
       id: 'admin',
@@ -220,7 +214,6 @@ const AppContent = () => {
           {activeTab === 'quicktest' && <QuickTestTab presetsHook={presetsHook} />}
           {activeTab === 'estimator' && <EstimatorTab presetsHook={presetsHook} />}
           {activeTab === 'guide' && <GuideTab />}
-          {activeTab === 'validation' && <ValidationTab />}
           {activeTab === 'admin' && isAdmin && <AdminTab />}
         </div>
       </div>

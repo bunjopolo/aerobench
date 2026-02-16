@@ -1,8 +1,7 @@
 import { useMemo } from 'react'
-import Plot from 'react-plotly.js'
 import { getVariableType } from '../../lib/variableTypes'
 
-export const StudyResults = ({ study, variations, onBack }) => {
+export const StudyResults = ({ study, variations, onBack, embedded = false }) => {
   const variableType = getVariableType(study.variable_type)
 
   // Filter to only variations with valid data
@@ -35,6 +34,17 @@ export const StudyResults = ({ study, variations, onBack }) => {
   }
 
   if (validVariations.length < 2) {
+    if (embedded) {
+      return (
+        <div className="mb-6 bg-dark-card rounded-xl border border-dark-border p-4">
+          <h3 className="text-lg font-bold text-white mb-2">Detailed Rankings</h3>
+          <p className="text-gray-400 text-sm">
+            Complete at least 2 configurations with valid runs to see comparison results.
+          </p>
+        </div>
+      )
+    }
+
     return (
       <div className="p-6 max-w-4xl mx-auto">
         <div className="flex items-center gap-4 mb-6">
@@ -56,116 +66,28 @@ export const StudyResults = ({ study, variations, onBack }) => {
     )
   }
 
-  // Calculate Y-axis range with padding for labels
-  const cdaValues = rankedVariations.map(v => v.avg_cda)
-  const cdaErrors = rankedVariations.map(v => v.std_cda || 0)
-  const cdaMin = Math.min(...cdaValues)
-  const cdaMax = Math.max(...cdaValues.map((v, i) => v + cdaErrors[i]))
-  const cdaPadding = (cdaMax - cdaMin) * 0.15
-
-  const crrValues = rankedVariations.map(v => v.avg_crr || 0).filter(v => v > 0)
-  const crrErrors = rankedVariations.map(v => v.std_crr || 0)
-  const crrMin = crrValues.length > 0 ? Math.min(...crrValues) : 0
-  const crrMax = crrValues.length > 0 ? Math.max(...crrValues.map((v, i) => v + crrErrors[i])) : 0.01
-  const crrPadding = (crrMax - crrMin) * 0.15
-
-  // Consistent color palette for configurations
-  const colorPalette = [
-    '#10b981', // emerald (best)
-    '#6366f1', // indigo
-    '#f59e0b', // amber
-    '#ec4899', // pink
-    '#14b8a6', // teal
-    '#8b5cf6', // violet
-    '#f97316', // orange
-    '#06b6d4', // cyan
-  ]
-
-  // Assign consistent colors to each variation
-  const getVariationColor = (variation, index) => {
-    if (variation.is_baseline) return '#6366f1' // Baseline always indigo
-    if (index === 0) return '#10b981' // Best always emerald
-    // Use palette for others, cycling if needed
-    const paletteIndex = (index - 1) % (colorPalette.length - 2) + 2
-    return colorPalette[paletteIndex]
-  }
-
-  const variationColors = rankedVariations.map((v, i) => getVariationColor(v, i))
-
-  // Bar chart data
-  const cdaChartData = {
-    x: rankedVariations.map(v => v.name),
-    y: rankedVariations.map(v => v.avg_cda),
-    type: 'bar',
-    marker: {
-      color: variationColors
-    },
-    error_y: {
-      type: 'data',
-      array: rankedVariations.map(v => v.std_cda || 0),
-      visible: true,
-      color: '#94a3b8'
-    },
-    text: rankedVariations.map(v => v.avg_cda.toFixed(4)),
-    textposition: 'inside',
-    textangle: 0,
-    textfont: { color: '#ffffff', size: 11 },
-    insidetextanchor: 'end',
-    hovertemplate: '%{x}<br>CdA: %{y:.4f}<extra></extra>'
-  }
-
-  const crrChartData = {
-    x: rankedVariations.map(v => v.name),
-    y: rankedVariations.map(v => v.avg_crr),
-    type: 'bar',
-    marker: {
-      color: variationColors
-    },
-    error_y: {
-      type: 'data',
-      array: rankedVariations.map(v => v.std_crr || 0),
-      visible: true,
-      color: '#94a3b8'
-    },
-    text: rankedVariations.map(v => v.avg_crr?.toFixed(5) || 'N/A'),
-    textposition: 'inside',
-    textangle: 0,
-    textfont: { color: '#ffffff', size: 11 },
-    insidetextanchor: 'end',
-    hovertemplate: '%{x}<br>Crr: %{y:.5f}<extra></extra>'
-  }
-
-  const chartLayout = {
-    paper_bgcolor: '#0f172a',
-    plot_bgcolor: '#0f172a',
-    font: { color: '#94a3b8', size: 11 },
-    margin: { t: 20, l: 60, r: 20, b: 100 },
-    xaxis: {
-      tickangle: -45,
-      gridcolor: '#1e293b',
-      automargin: true
-    },
-    yaxis: {
-      gridcolor: '#1e293b',
-      automargin: true
-    },
-    bargap: 0.3
-  }
-
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      {/* Header */}
-      <div className="flex items-center gap-4 mb-6">
-        <button onClick={onBack} className="text-gray-400 hover:text-white">
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-          </svg>
-        </button>
-        <div className="flex-1">
-          <h2 className="text-2xl font-bold text-white">{study.name} - Results</h2>
-          <p className="text-gray-400 text-sm">Comparing {validVariations.length} variations</p>
+    <div className={embedded ? 'mb-6' : 'p-6 max-w-6xl mx-auto'}>
+      {!embedded && (
+        <div className="flex items-center gap-4 mb-6">
+          <button onClick={onBack} className="text-gray-400 hover:text-white">
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <div className="flex-1">
+            <h2 className="text-2xl font-bold text-white">{study.name} - Results</h2>
+            <p className="text-gray-400 text-sm">Comparing {validVariations.length} variations</p>
+          </div>
         </div>
-      </div>
+      )}
+
+      {embedded && (
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-white">Detailed Rankings</h3>
+          <p className="text-xs text-gray-500">{validVariations.length} configurations with valid runs</p>
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-3 gap-4 mb-6">
@@ -194,7 +116,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
         {/* Potential Savings */}
         {baselineCda && rankedVariations[0]?.avg_cda < baselineCda && (
           <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-            <span className="text-xs text-gray-400 uppercase">Potential Savings</span>
+            <span className="text-xs text-gray-400 uppercase">Potential Savings Over Baseline</span>
             <div className="flex items-baseline gap-2 mt-1">
               <span className="text-2xl font-bold text-amber-400">
                 {calculateWattsSaved(rankedVariations[0].avg_cda - baselineCda).toFixed(1)}W
@@ -206,47 +128,6 @@ export const StudyResults = ({ study, variations, onBack }) => {
             </p>
           </div>
         )}
-      </div>
-
-      {/* Charts */}
-      <div className="grid grid-cols-2 gap-6 mb-6">
-        {/* CdA Chart */}
-        <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-          <h3 className="text-lg font-bold text-white mb-4">CdA Comparison</h3>
-          <Plot
-            data={[cdaChartData]}
-            layout={{
-              ...chartLayout,
-              yaxis: {
-                ...chartLayout.yaxis,
-                title: 'CdA (m²)',
-                range: [Math.max(0, cdaMin - cdaPadding * 2), cdaMax + cdaPadding],
-                zeroline: false
-              }
-            }}
-            style={{ width: '100%', height: 300 }}
-            config={{ displayModeBar: false, responsive: true }}
-          />
-        </div>
-
-        {/* Crr Chart */}
-        <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-          <h3 className="text-lg font-bold text-white mb-4">Crr Comparison</h3>
-          <Plot
-            data={[crrChartData]}
-            layout={{
-              ...chartLayout,
-              yaxis: {
-                ...chartLayout.yaxis,
-                title: 'Crr',
-                range: [Math.max(0, crrMin - crrPadding * 2), crrMax + crrPadding],
-                zeroline: false
-              }
-            }}
-            style={{ width: '100%', height: 300 }}
-            config={{ displayModeBar: false, responsive: true }}
-          />
-        </div>
       </div>
 
       {/* Detailed Rankings Table */}
@@ -350,7 +231,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
       {/* Methodology Note */}
       <div className="mt-6 p-4 bg-dark-bg rounded-xl border border-dark-border text-xs text-gray-500">
         <p className="mb-1"><strong className="text-gray-400">Note:</strong> Watts saved calculated using P = ½ρCdAv³ at reference speed of 40 km/h.</p>
-        <p>Speed gains are approximate and depend on terrain, rider position, and other factors.</p>
+        <p>Speed gains are approximate and highly dependant on your testing procedure, consistency and data integrity.</p>
       </div>
     </div>
   )

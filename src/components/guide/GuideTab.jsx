@@ -116,24 +116,6 @@ export const GuideTab = () => {
             </div>
           </section>
 
-          {/* Shen Method */}
-          <section>
-            <h3 className="text-lg font-medium text-white mb-2">Shen Method</h3>
-            <p className="text-gray-500">Coming Soon</p>
-          </section>
-
-
-          {/* Single Climb */}
-          <section>
-            <h3 className="text-lg font-medium text-white mb-2">Single Climb</h3>
-            <p className="text-gray-500">Coming Soon</p>
-          </section>
-
-          {/* Coast Down */}
-          <section>
-            <h3 className="text-lg font-medium text-white mb-2">Coast Down</h3>
-            <p className="text-gray-500">Coming Soon</p>
-          </section>
         </div>
       </div>
     </div>

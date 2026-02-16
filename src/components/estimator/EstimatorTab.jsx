@@ -310,7 +310,7 @@ export const EstimatorTab = ({ presetsHook }) => {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
             </svg>
           </div>
-          <h2 className="text-xl font-bold text-white mb-2">Speed Estimator</h2>
+          <h2 className="text-xl font-bold text-white mb-2">Course Simulator</h2>
           <p className="text-gray-400 mb-6">
             Predict your speed and time based on your aerodynamic values. Create an account to get started.
           </p>
@@ -326,7 +326,7 @@ export const EstimatorTab = ({ presetsHook }) => {
     <div className="p-6 max-w-5xl mx-auto">
       {/* Header */}
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-white">Speed Estimator</h2>
+        <h2 className="text-2xl font-bold text-white">Course Simulator</h2>
         <p className="text-gray-400 text-sm">Predict performance based on your aerodynamic values</p>
       </div>
 

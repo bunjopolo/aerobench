@@ -122,7 +122,6 @@ export const DashboardTab = ({ onStudyClick }) => {
 
   const allStudies = studies || []
   const totalConfigurations = allStudies.reduce((sum, s) => sum + (s.variation_count || 0), 0)
-  const comparisonReadyStudies = allStudies.filter(s => (s.variation_count || 0) >= 2).length
 
   return (
     <div className="p-6 max-w-6xl mx-auto space-y-6">
@@ -133,7 +132,7 @@ export const DashboardTab = ({ onStudyClick }) => {
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
           <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Total Studies</div>
           <div className="text-3xl font-bold text-white">{allStudies.length}</div>
@@ -142,11 +141,6 @@ export const DashboardTab = ({ onStudyClick }) => {
           <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Configurations</div>
           <div className="text-3xl font-bold text-blue-400">{totalConfigurations}</div>
           <p className="text-xs text-gray-500 mt-1">Across all studies</p>
-        </div>
-        <div className="bg-dark-card p-6 rounded-xl border border-dark-border">
-          <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Comparison-Ready</div>
-          <div className="text-3xl font-bold text-green-400">{comparisonReadyStudies}</div>
-          <p className="text-xs text-gray-500 mt-1">2+ configurations</p>
         </div>
       </div>
 

@@ -2,6 +2,14 @@
 // Each type defines how variations are entered and displayed
 
 export const VARIABLE_TYPES = {
+  none: {
+    id: 'none',
+    label: 'None',
+    icon: 'none',
+    inputType: 'none',
+    description: 'No specific variable. Use configuration names only.',
+    formatValue: () => ''
+  },
   tires: {
     id: 'tires',
     label: 'Tires',

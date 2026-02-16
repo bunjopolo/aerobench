@@ -6,6 +6,7 @@ import { parseActivityFile } from '../../lib/gpxParser'
 import { solveCdaCrr, solveCdaCrrClimb, solveCdaCrrShenDual, solveCdaCrrSweep, calculateBow, safeNum, GRAVITY } from '../../lib/physics'
 import { lowPassFilter } from '../../lib/preprocessing'
 import { calculateAirDensity } from '../../lib/airDensity'
+import { fetchRideWeatherSnapshot } from '../../lib/weather'
 import { SavePresetModal } from '../presets'
 import { AlertDialog } from '../ui'
 
@@ -38,6 +39,10 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [cdaMax, setCdaMax] = useState(0.50)
   const [crrMin, setCrrMin] = useState(0.002)
   const [crrMax, setCrrMax] = useState(0.012)
+  const effectiveCdaMin = Math.min(cdaMin, cdaMax)
+  const effectiveCdaMax = Math.max(cdaMin, cdaMax)
+  const effectiveCrrMin = Math.min(crrMin, crrMax)
+  const effectiveCrrMax = Math.max(crrMin, crrMax)
 
   // Railing detection
   const [isRailing, setIsRailing] = useState(false)
@@ -45,21 +50,22 @@ export const QuickTestTab = ({ presetsHook }) => {
 
   // Clamp CdA when bounds change
   useEffect(() => {
-    if (cda < cdaMin) setCda(cdaMin)
-    if (cda > cdaMax) setCda(cdaMax)
-  }, [cda, cdaMin, cdaMax])
+    if (cda < effectiveCdaMin) setCda(effectiveCdaMin)
+    if (cda > effectiveCdaMax) setCda(effectiveCdaMax)
+  }, [cda, effectiveCdaMin, effectiveCdaMax])
 
   // Clamp Crr when bounds change
   useEffect(() => {
-    if (crr < crrMin) setCrr(crrMin)
-    if (crr > crrMax) setCrr(crrMax)
-  }, [crr, crrMin, crrMax])
+    if (crr < effectiveCrrMin) setCrr(effectiveCrrMin)
+    if (crr > effectiveCrrMax) setCrr(effectiveCrrMax)
+  }, [crr, effectiveCrrMin, effectiveCrrMax])
 
   const [data, setData] = useState(null)
   const [startTime, setStartTime] = useState(null)
   const [fileName, setFileName] = useState(null)
   const [hasPowerData, setHasPowerData] = useState(true)
   const [lapMarkers, setLapMarkers] = useState([])
+  const [speedSource, setSpeedSource] = useState('wheel')
 
   // Second file state (for climb mode)
   const [data2, setData2] = useState(null)
@@ -71,8 +77,9 @@ export const QuickTestTab = ({ presetsHook }) => {
   // Per-file ranges (for climb mode)
   const [range2, setRange2] = useState([0, 100])
 
-  // Sample lag fixed at 0 to keep workflow simple
-  const offset2 = 0
+  // Power offset (samples). Positive values advance power relative to speed/elevation.
+  const [powerOffset, setPowerOffset] = useState(0)
+  const offset2 = powerOffset
 
   // Climb mode result
   const [climbResult, setClimbResult] = useState(null)
@@ -80,7 +87,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   // Environment
   const [wSpd, setWSpd] = useState(0)
   const [wDir, setWDir] = useState(0)
-  const offset = 0
+  const offset = powerOffset
   const [range, setRange] = useState([0, 100])
 
   // Solver
@@ -117,6 +124,42 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [sweepCrrMin, setSweepCrrMin] = useState(0.001)
   const [sweepCrrMax, setSweepCrrMax] = useState(0.020)
   const [sweepResolution, setSweepResolution] = useState(70)
+
+  const wheelSpeedAvailable = Boolean(
+    data?.hasWheelSpeed &&
+    Array.isArray(data?.vWheel) &&
+    Array.isArray(data?.aWheel)
+  )
+  const wheelSpeedAvailable2 = Boolean(
+    data2?.hasWheelSpeed &&
+    Array.isArray(data2?.vWheel) &&
+    Array.isArray(data2?.aWheel)
+  )
+  const canUseWheelSource = (method === 'shen' || method === 'climb')
+    ? wheelSpeedAvailable && (!data2 || wheelSpeedAvailable2)
+    : wheelSpeedAvailable
+
+  const dataForSolve = useMemo(() => {
+    if (!data) return null
+    if (speedSource === 'wheel' && wheelSpeedAvailable) {
+      return { ...data, v: data.vWheel, a: data.aWheel }
+    }
+    return { ...data, v: data.vGps || data.v, a: data.aGps || data.a }
+  }, [data, speedSource, wheelSpeedAvailable])
+
+  const data2ForSolve = useMemo(() => {
+    if (!data2) return null
+    if (speedSource === 'wheel' && wheelSpeedAvailable2) {
+      return { ...data2, v: data2.vWheel, a: data2.aWheel }
+    }
+    return { ...data2, v: data2.vGps || data2.v, a: data2.aGps || data2.a }
+  }, [data2, speedSource, wheelSpeedAvailable2])
+
+  useEffect(() => {
+    if (speedSource === 'wheel' && (data || data2) && !canUseWheelSource) {
+      setSpeedSource('gps')
+    }
+  }, [speedSource, canUseWheelSource, data, data2])
 
   // Air density calculator state
   const [showRhoCalc, setShowRhoCalc] = useState(false)
@@ -191,6 +234,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     setCrr(0.004)
     setWSpd(0)
     setWDir(0)
+    setPowerOffset(0)
     setRange([0, 100])
     setRange2([0, 100])
     setMethod('chung')
@@ -206,13 +250,14 @@ export const QuickTestTab = ({ presetsHook }) => {
     setSweepCrrMin(0.001)
     setSweepCrrMax(0.020)
     setSweepResolution(70)
+    setSpeedSource('wheel')
   }
 
   // Simulation calculation - compute virtual elevation for SELECTED RANGE ONLY
   // Starts fresh at ele[sIdx], treats cropped region as standalone segment
   const sim = useMemo(() => {
-    if (!data) return null
-    const { pwr, v, a, ds, ele, b } = data
+    if (!dataForSolve) return null
+    const { pwr, v, a, ds, ele, b } = dataForSolve
     const sIdx = Math.floor((range[0] / 100) * pwr.length)
     const eIdx = Math.floor((range[1] / 100) * pwr.length)
 
@@ -291,12 +336,12 @@ export const QuickTestTab = ({ presetsHook }) => {
     const netElev = vEle[eIdx - 1] - vEle[sIdx]
 
     return { vEle, err, sIdx, eIdx, rmse, r2, netElev }
-  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range, method])
+  }, [dataForSolve, cda, crr, mass, eff, rho, offset, wSpd, wDir, range, method])
 
   // Simulation calculation for second file (climb/shen mode) - full virtual elevation
   const sim2 = useMemo(() => {
-    if (!data2 || (method !== 'climb' && method !== 'shen')) return null
-    const { pwr, v, a, ds, ele, b } = data2
+    if (!data2ForSolve || (method !== 'climb' && method !== 'shen')) return null
+    const { pwr, v, a, ds, ele, b } = data2ForSolve
     const sIdx = Math.floor((range2[0] / 100) * pwr.length)
     const eIdx = Math.floor((range2[1] / 100) * pwr.length)
 
@@ -354,7 +399,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     const netElev = vEle[eIdx - 1] - vEle[sIdx]
 
     return { vEle, err, sIdx, eIdx, rmse, netElev }
-  }, [data2, cda, crr, mass, eff, rho, offset2, wSpd, wDir, range2, method])
+  }, [data2ForSolve, cda, crr, mass, eff, rho, offset2, wSpd, wDir, range2, method])
 
   // Calculate current bow for display
   const currentBow = useMemo(() => {
@@ -372,15 +417,15 @@ export const QuickTestTab = ({ presetsHook }) => {
 
   // Solvers
   const runGlobal = () => {
-    if (!data) return
+    if (!dataForSolve || !sim) return
     setBusy(true)
     setShenResult(null)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, {
+      const res = solveCdaCrr(dataForSolve, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, {
         method: 'chung',
         maxIterations,
-        cdaBounds: [cdaMin, cdaMax],
-        crrBounds: [crrMin, crrMax]
+        cdaBounds: [effectiveCdaMin, effectiveCdaMax],
+        crrBounds: [effectiveCrrMin, effectiveCrrMax]
       })
       setCda(res.cda)
       setCrr(res.crr)
@@ -392,18 +437,18 @@ export const QuickTestTab = ({ presetsHook }) => {
 
   const runShen = () => {
     // Shen method requires two files (slow and fast acceleration)
-    if (!data || !data2 || !sim || !sim2) return
+    if (!dataForSolve || !data2ForSolve || !sim || !sim2) return
     setBusy(true)
     setShenResult(null)
     setTimeout(() => {
       const res = solveCdaCrrShenDual(
-        data, sim.sIdx, sim.eIdx,
-        data2, sim2.sIdx, sim2.eIdx,
+        dataForSolve, sim.sIdx, sim.eIdx,
+        data2ForSolve, sim2.sIdx, sim2.eIdx,
         cda, crr,
         mass, eff, rho,
         offset, offset2,
         wSpd, wDir,
-        { maxIterations, cdaBounds: [cdaMin, cdaMax], crrBounds: [crrMin, crrMax] }
+        { maxIterations, cdaBounds: [effectiveCdaMin, effectiveCdaMax], crrBounds: [effectiveCrrMin, effectiveCrrMax] }
       )
       setCda(res.cda)
       setCrr(res.crr)
@@ -415,18 +460,18 @@ export const QuickTestTab = ({ presetsHook }) => {
   }
 
   const runClimb = () => {
-    if (!data || !data2 || !sim || !sim2) return
+    if (!dataForSolve || !data2ForSolve || !sim || !sim2) return
     setBusy(true)
     setClimbResult(null)
     setTimeout(() => {
       const res = solveCdaCrrClimb(
-        data, sim.sIdx, sim.eIdx,
-        data2, sim2.sIdx, sim2.eIdx,
+        dataForSolve, sim.sIdx, sim.eIdx,
+        data2ForSolve, sim2.sIdx, sim2.eIdx,
         cda, crr,
         mass, eff, rho,
         offset, offset2,
         wSpd, wDir,
-        { maxIterations, cdaBounds: [cdaMin, cdaMax], crrBounds: [crrMin, crrMax] }
+        { maxIterations, cdaBounds: [effectiveCdaMin, effectiveCdaMax], crrBounds: [effectiveCrrMin, effectiveCrrMax] }
       )
       setCda(res.cda)
       setCrr(res.crr)
@@ -438,13 +483,13 @@ export const QuickTestTab = ({ presetsHook }) => {
   }
 
   const runSweep = async () => {
-    if (!data || !sim) return
+    if (!dataForSolve || !sim) return
     setSweepBusy(true)
     setSweepResults(null)
     setSweepProgress(0)
 
     const res = await solveCdaCrrSweep(
-      data, sim.sIdx, sim.eIdx,
+      dataForSolve, sim.sIdx, sim.eIdx,
       mass, eff, rho, offset, wSpd, wDir,
       {
         cdaMin: sweepCdaMin,
@@ -485,70 +530,60 @@ export const QuickTestTab = ({ presetsHook }) => {
     setFetchingW(true)
     setWeatherError(null)
     try {
-      const mid = Math.floor(data.lat.length / 2)
-      const ds = startTime.toISOString().split('T')[0]
-      const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl`
-      const r = await fetch(u)
-      if (!r.ok) throw new Error('Weather service unavailable')
-      const j = await r.json()
-      if (j.hourly) {
-        const h = startTime.getUTCHours()
-        const wind10m = j.hourly.wind_speed_10m?.[h]
-        const windDir = j.hourly.wind_direction_10m?.[h]
-        const tempC = j.hourly.temperature_2m?.[h]
-        const humidity = j.hourly.relative_humidity_2m?.[h]
-        const pressureHpa = j.hourly.surface_pressure?.[h] ?? j.hourly.pressure_msl?.[h]
+      const len = Array.isArray(data.dist) ? data.dist.length : 0
+      const sIdx = len > 0 ? Math.max(0, Math.min(len - 1, Math.floor((range[0] / 100) * len))) : 0
+      const selectedStartTime = Array.isArray(data.t) && Number.isFinite(data.t[sIdx])
+        ? new Date(startTime.getTime() + data.t[sIdx] * 1000)
+        : startTime
 
-        const hasWind = Number.isFinite(wind10m)
-        const hasTemp = Number.isFinite(tempC)
-        const hasHumidity = Number.isFinite(humidity)
-        const hasPressure = Number.isFinite(pressureHpa)
-        let appliedAny = false
+      const wx = await fetchRideWeatherSnapshot({ data, startTime: selectedStartTime, sampleIndex: sIdx })
+      let appliedAny = false
 
-        if (weatherApplyWind && hasWind) {
-          // Convert 10 m wind (km/h) to rider-height m/s using the wind profile power law factor.
-          setWSpd(parseFloat((wind10m / 3.6 * 0.6).toFixed(2)))
-          if (Number.isFinite(windDir)) setWDir(windDir)
+      if (weatherApplyWind && Number.isFinite(wx.windSpeedRiderMs)) {
+        setWSpd(wx.windSpeedRiderMs)
+        if (Number.isFinite(wx.windDirectionDeg)) setWDir(wx.windDirectionDeg)
+        appliedAny = true
+      }
+
+      if (weatherApplyRho && Number.isFinite(wx.temperatureC)) {
+        setRhoTemp(parseFloat(wx.temperatureC.toFixed(1)))
+      }
+      if (weatherApplyRho && Number.isFinite(wx.humidityPct)) {
+        setRhoHumidity(Math.round(wx.humidityPct))
+      }
+
+      if (weatherApplyRho && Number.isFinite(wx.temperatureC) && Number.isFinite(wx.humidityPct)) {
+        if (Number.isFinite(wx.pressureHpa)) {
+          setRhoUseElevation(false)
+          setRhoPressure(parseFloat(wx.pressureHpa.toFixed(1)))
+          setRho(calculateAirDensity({
+            temperature: wx.temperatureC,
+            humidity: wx.humidityPct,
+            pressure: wx.pressureHpa
+          }))
+          appliedAny = true
+        } else {
+          const elev = Number.isFinite(wx.elevationM) ? wx.elevationM : rhoElevation
+          setRhoUseElevation(true)
+          if (Number.isFinite(wx.elevationM)) setRhoElevation(Math.round(wx.elevationM))
+          setRho(calculateAirDensity({
+            temperature: wx.temperatureC,
+            humidity: wx.humidityPct,
+            elevation: elev
+          }))
           appliedAny = true
         }
+      }
 
-        if (weatherApplyRho && hasTemp) setRhoTemp(parseFloat(tempC.toFixed(1)))
-        if (weatherApplyRho && hasHumidity) setRhoHumidity(Math.round(humidity))
-
-        if (weatherApplyRho && hasTemp && hasHumidity) {
-          if (hasPressure) {
-            setRhoUseElevation(false)
-            setRhoPressure(parseFloat(pressureHpa.toFixed(1)))
-            setRho(calculateAirDensity({
-              temperature: tempC,
-              humidity,
-              pressure: pressureHpa
-            }))
-            appliedAny = true
-          } else {
-            const elev = Number.isFinite(data.ele?.[mid]) ? data.ele[mid] : rhoElevation
-            setRhoUseElevation(true)
-            if (Number.isFinite(data.ele?.[mid])) setRhoElevation(Math.round(elev))
-            setRho(calculateAirDensity({
-              temperature: tempC,
-              humidity,
-              elevation: elev
-            }))
-            appliedAny = true
-          }
-        }
-
-        if (!appliedAny) {
-          setWeatherError('No data for this time')
-        }
-      } else {
-        setWeatherError('No weather data available')
+      if (!appliedAny) {
+        setWeatherError('Weather data found, but not enough for selected updates')
       }
     } catch (e) {
       console.error(e)
-      setWeatherError('Failed to fetch weather')
+      setWeatherError(e?.message || 'Failed to fetch weather')
+    } finally {
+      setFetchingW(false)
     }
-    setFetchingW(false)
   }
 
   // Calculate distance ranges from percentage ranges
@@ -991,7 +1026,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   return (
     <div className="flex h-full">
       {/* Sidebar Controls */}
-      <div className="w-72 flex-shrink-0 border-r border-dark-border overflow-y-auto p-4 space-y-4">
+      <div className="w-72 flex-shrink-0 border-r border-dark-border overflow-y-auto p-4 flex flex-col gap-4">
         {/* Header */}
         <div>
           <h2 className="text-xl font-bold text-white">Quick Test</h2>
@@ -1123,7 +1158,7 @@ export const QuickTestTab = ({ presetsHook }) => {
         </div>
 
         {/* Combined: Analysis Method + System Parameters + Solver */}
-        <div className="card">
+        <div className="card order-2">
           <h3 className="label-sm mb-2">Analysis</h3>
 
           {/* Method Selector - Shows methods based on feature flags */}
@@ -1171,6 +1206,38 @@ export const QuickTestTab = ({ presetsHook }) => {
                 <span className="text-xxs px-2 py-1 rounded bg-indigo-600 text-white font-medium">Chung Method</span>
                 <span className="text-xxs text-gray-500">Virtual Elevation Analysis</span>
               </div>
+            </div>
+          )}
+
+          {/* Speed Source */}
+          {data && (
+            <div className="mb-3">
+              <label className="text-xxs text-gray-500 mb-1 block">Speed Source</label>
+              <div className="flex bg-dark-input p-0.5 rounded border border-dark-border">
+                <button
+                  onClick={() => canUseWheelSource && setSpeedSource('wheel')}
+                  disabled={!canUseWheelSource}
+                  className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${speedSource === 'wheel' ? 'bg-cyan-600 text-white' : 'text-gray-400'} ${!canUseWheelSource ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  Speed Sensor
+                </button>
+                <button
+                  onClick={() => setSpeedSource('gps')}
+                  className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${speedSource === 'gps' ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                >
+                  GPS
+                </button>
+              </div>
+              <p className="text-xxs text-gray-500 mt-1">
+                {canUseWheelSource
+                  ? `Using ${speedSource === 'wheel' ? 'speed sensor' : 'GPS'} speed for solver and VE.`
+                  : 'Speed sensor data not available for the loaded file(s).'}
+              </p>
+              {speedSource === 'gps' && (
+                <p className="text-xxs text-yellow-400 mt-1">
+                  Warning: GPS speed is less reliable and may reduce CdA/Crr accuracy.
+                </p>
+              )}
             </div>
           )}
 
@@ -1269,27 +1336,27 @@ export const QuickTestTab = ({ presetsHook }) => {
               <span className="text-xxs text-gray-400">Weather Auto-Fill</span>
               <button
                 onClick={getWeather}
-                disabled={fetchingW || (!weatherApplyWind && !weatherApplyRho)}
+                disabled={!data || !startTime || fetchingW || (!weatherApplyWind && !weatherApplyRho)}
                 className="btn-secondary text-xxs py-1 px-3"
               >
                 {fetchingW ? 'Fetching...' : 'Fetch Weather'}
               </button>
             </div>
             <p className="text-xxs text-gray-500 mb-2">
-              Apply fetched weather to wind and/or air density.
+              Apply fetched weather to wind and/or air density (source: Open-Meteo archive API).
             </p>
             <div className="flex gap-2 mb-2">
               <button
                 onClick={() => setWeatherApplyWind(!weatherApplyWind)}
                 className={`text-xxs px-2 py-0.5 rounded border ${weatherApplyWind ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'}`}
               >
-                Update Wind
+                Wind: {weatherApplyWind ? 'On' : 'Off'}
               </button>
               <button
                 onClick={() => setWeatherApplyRho(!weatherApplyRho)}
                 className={`text-xxs px-2 py-0.5 rounded border ${weatherApplyRho ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}
               >
-                Update Air Density
+                Air Density: {weatherApplyRho ? 'On' : 'Off'}
               </button>
             </div>
             {weatherError && (
@@ -1310,6 +1377,31 @@ export const QuickTestTab = ({ presetsHook }) => {
           {/* Solver Controls */}
           {(data || (method !== 'chung' && (data || data2))) && (
             <div className="pt-3 border-t border-dark-border">
+              <div className="mb-2">
+                <label className="text-xxs text-gray-500 mb-1 block">Power Offset (samples)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="-20"
+                    max="20"
+                    step="1"
+                    value={powerOffset}
+                    onChange={e => setPowerOffset(parseInt(e.target.value, 10))}
+                    className="w-full accent-indigo-500"
+                  />
+                  <input
+                    type="number"
+                    min="-20"
+                    max="20"
+                    step="1"
+                    value={powerOffset}
+                    onChange={e => setPowerOffset(Math.max(-20, Math.min(20, Math.round(safeNum(e.target.value, powerOffset)))))}
+                    className="input-dark w-16 text-center"
+                  />
+                </div>
+                <p className="text-xxs text-gray-500 mt-1">Positive values advance power; negative values delay power. Use this to correct lag from power meter data.</p>
+              </div>
+
               {method === 'chung' && (
                 <div className="flex items-center gap-2 mb-2">
                   <div className="flex-1">
@@ -1445,7 +1537,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
         {/* Combined: Fitted Values + Results */}
         {(data || (method !== 'chung' && (data || data2))) && (
-          <div className="card">
+          <div className="card order-1">
             <h3 className="label-sm mb-3">Results</h3>
 
             {/* CdA/Crr Sliders */}
@@ -1457,13 +1549,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 </div>
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => setCda(Math.max(0.15, cda - cdaNudge))}
+                    onClick={() => setCda(Math.max(effectiveCdaMin, cda - cdaNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
                     title={`-${cdaNudge}`}
                   >−</button>
-                  <input type="range" min="0.15" max="0.5" step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
+                  <input type="range" min={effectiveCdaMin} max={effectiveCdaMax} step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
                   <button
-                    onClick={() => setCda(Math.min(0.5, cda + cdaNudge))}
+                    onClick={() => setCda(Math.min(effectiveCdaMax, cda + cdaNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
                     title={`+${cdaNudge}`}
                   >+</button>
@@ -1490,13 +1582,13 @@ export const QuickTestTab = ({ presetsHook }) => {
                 </div>
                 <div className="flex items-center gap-1">
                   <button
-                    onClick={() => setCrr(Math.max(0.002, crr - crrNudge))}
+                    onClick={() => setCrr(Math.max(effectiveCrrMin, crr - crrNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
                     title={`-${crrNudge}`}
                   >−</button>
-                  <input type="range" min="0.002" max="0.02" step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
+                  <input type="range" min={effectiveCrrMin} max={effectiveCrrMax} step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
                   <button
-                    onClick={() => setCrr(Math.min(0.02, crr + crrNudge))}
+                    onClick={() => setCrr(Math.min(effectiveCrrMax, crr + crrNudge))}
                     className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
                     title={`+${crrNudge}`}
                   >+</button>
@@ -1525,10 +1617,10 @@ export const QuickTestTab = ({ presetsHook }) => {
                   <span>⚠️ Solution at bounds</span>
                 </div>
                 <div className="text-yellow-300/80 text-xxs space-y-0.5">
-                  {railingDetails?.cdaAtLowerBound && <div>CdA at minimum ({cdaMin})</div>}
-                  {railingDetails?.cdaAtUpperBound && <div>CdA at maximum ({cdaMax})</div>}
-                  {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({crrMin})</div>}
-                  {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({crrMax})</div>}
+                  {railingDetails?.cdaAtLowerBound && <div>CdA at minimum ({effectiveCdaMin})</div>}
+                  {railingDetails?.cdaAtUpperBound && <div>CdA at maximum ({effectiveCdaMax})</div>}
+                  {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({effectiveCrrMin})</div>}
+                  {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({effectiveCrrMax})</div>}
                 </div>
                   <div className="text-gray-400 text-xxs mt-1">
                     Try adjusting bounds below
@@ -1547,7 +1639,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                       type="number"
                       step="0.01"
                       value={cdaMin}
-                      onChange={e => setCdaMin(parseFloat(e.target.value))}
+                      onChange={e => setCdaMin(safeNum(e.target.value, cdaMin))}
                       className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                     />
                   </div>
@@ -1557,7 +1649,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                       type="number"
                       step="0.01"
                       value={cdaMax}
-                      onChange={e => setCdaMax(parseFloat(e.target.value))}
+                      onChange={e => setCdaMax(safeNum(e.target.value, cdaMax))}
                       className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                     />
                   </div>
@@ -1569,7 +1661,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                       type="number"
                       step="0.001"
                       value={crrMin}
-                      onChange={e => setCrrMin(parseFloat(e.target.value))}
+                      onChange={e => setCrrMin(safeNum(e.target.value, crrMin))}
                       className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                     />
                   </div>
@@ -1579,7 +1671,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                       type="number"
                       step="0.001"
                       value={crrMax}
-                      onChange={e => setCrrMax(parseFloat(e.target.value))}
+                      onChange={e => setCrrMax(safeNum(e.target.value, crrMax))}
                       className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                     />
                   </div>
@@ -1641,7 +1733,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                 </svg>
-                Save as Preset
+                Save Simulator Preset
               </button>
             )}
           </div>
@@ -1649,7 +1741,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
         {/* Sweep Info Panel */}
         {method === 'sweep' && sweepResults && (
-          <div className="card border-violet-500/30">
+          <div className="card border-violet-500/30 order-4">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-xxs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-400 border border-violet-500/30 uppercase font-medium">2D Sweep</span>
               <h3 className="label-sm">Solution Space</h3>
@@ -1678,7 +1770,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
         {/* Experimental Features */}
         {(data || ((method === 'climb' || method === 'shen') && (data || data2))) && (
-          <div className="card border-yellow-500/30">
+          <div className="card border-yellow-500/30 order-3">
             <div className="flex items-center gap-2 mb-3">
               <span className="text-xxs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
               <h3 className="label-sm">Advanced</h3>

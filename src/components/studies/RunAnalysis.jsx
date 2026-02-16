@@ -6,6 +6,7 @@ import { lowPassFilter } from '../../lib/preprocessing'
 import { useRuns } from '../../hooks/useRuns'
 import { getVariableType } from '../../lib/variableTypes'
 import { calculateAirDensity } from '../../lib/airDensity'
+import { fetchRideWeatherSnapshot } from '../../lib/weather'
 import { ConfirmDialog, AlertDialog } from '../ui'
 
 export const RunAnalysis = ({ variation, study, onBack }) => {
@@ -52,6 +53,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [cdaMax, setCdaMax] = useState(0.50)
   const [crrMin, setCrrMin] = useState(0.002)
   const [crrMax, setCrrMax] = useState(0.012)
+  const effectiveCdaMin = Math.min(cdaMin, cdaMax)
+  const effectiveCdaMax = Math.max(cdaMin, cdaMax)
+  const effectiveCrrMin = Math.min(crrMin, crrMax)
+  const effectiveCrrMax = Math.max(crrMin, crrMax)
 
   // Railing detection
   const [isRailing, setIsRailing] = useState(false)
@@ -59,26 +64,28 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
   // Clamp CdA when bounds change
   useEffect(() => {
-    if (cda < cdaMin) setCda(cdaMin)
-    if (cda > cdaMax) setCda(cdaMax)
-  }, [cda, cdaMin, cdaMax])
+    if (cda < effectiveCdaMin) setCda(effectiveCdaMin)
+    if (cda > effectiveCdaMax) setCda(effectiveCdaMax)
+  }, [cda, effectiveCdaMin, effectiveCdaMax])
 
   // Clamp Crr when bounds change
   useEffect(() => {
-    if (crr < crrMin) setCrr(crrMin)
-    if (crr > crrMax) setCrr(crrMax)
-  }, [crr, crrMin, crrMax])
+    if (crr < effectiveCrrMin) setCrr(effectiveCrrMin)
+    if (crr > effectiveCrrMax) setCrr(effectiveCrrMax)
+  }, [crr, effectiveCrrMin, effectiveCrrMax])
 
   const [data, setData] = useState(null)
   const [startTime, setStartTime] = useState(null)
   const [fileName, setFileName] = useState(null)
   const [hasPowerData, setHasPowerData] = useState(true)
   const [lapMarkers, setLapMarkers] = useState([])
+  const [speedSource, setSpeedSource] = useState('wheel')
 
   // Environment
   const [wSpd, setWSpd] = useState(0)
   const [wDir, setWDir] = useState(0)
-  const offset = 0
+  const [powerOffset, setPowerOffset] = useState(0)
+  const offset = powerOffset
   const [range, setRange] = useState([0, 100])
 
   // Solver
@@ -106,6 +113,26 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [deleteDialog, setDeleteDialog] = useState({ open: false, runId: null, runName: '' })
   const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
 
+  const wheelSpeedAvailable = Boolean(
+    data?.hasWheelSpeed &&
+    Array.isArray(data?.vWheel) &&
+    Array.isArray(data?.aWheel)
+  )
+
+  const dataForSolve = useMemo(() => {
+    if (!data) return null
+    if (speedSource === 'wheel' && wheelSpeedAvailable) {
+      return { ...data, v: data.vWheel, a: data.aWheel }
+    }
+    return { ...data, v: data.vGps || data.v, a: data.aGps || data.a }
+  }, [data, speedSource, wheelSpeedAvailable])
+
+  useEffect(() => {
+    if (speedSource === 'wheel' && data && !wheelSpeedAvailable) {
+      setSpeedSource('gps')
+    }
+  }, [speedSource, wheelSpeedAvailable, data])
+
   // File Handler (supports GPX and FIT)
   const onFile = async (e) => {
     const f = e.target.files[0]
@@ -130,6 +157,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     setCrr(0.004)
     setWSpd(0)
     setWDir(0)
+    setPowerOffset(0)
     setRange([0, 100])
     setMaxIterations(500)
     setFilterGps(false)
@@ -139,13 +167,14 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     setRailingDetails(null)
     setHasPowerData(true)
     setLapMarkers([])
+    setSpeedSource('wheel')
   }
 
   // Simulation calculation - compute virtual elevation for SELECTED RANGE ONLY
   // Starts fresh at ele[sIdx], treats cropped region as standalone segment
   const sim = useMemo(() => {
-    if (!data) return null
-    const { pwr, v, a, ds, ele, b } = data
+    if (!dataForSolve) return null
+    const { pwr, v, a, ds, ele, b } = dataForSolve
     const sIdx = Math.floor((range[0] / 100) * pwr.length)
     const eIdx = Math.floor((range[1] / 100) * pwr.length)
 
@@ -221,18 +250,18 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
 
     return { vEle, err, sIdx, eIdx, rmse, r2 }
-  }, [data, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
+  }, [dataForSolve, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
 
   // Solvers
   const runGlobal = () => {
-    if (!data) return
+    if (!dataForSolve || !sim) return
     setBusy(true)
     setTimeout(() => {
-      const res = solveCdaCrr(data, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, {
+      const res = solveCdaCrr(dataForSolve, sim.sIdx, sim.eIdx, cda, crr, mass, eff, rho, offset, wSpd, wDir, {
         method: 'chung',
         maxIterations,
-        cdaBounds: [cdaMin, cdaMax],
-        crrBounds: [crrMin, crrMax]
+        cdaBounds: [effectiveCdaMin, effectiveCdaMax],
+        crrBounds: [effectiveCrrMin, effectiveCrrMax]
       })
       setCda(res.cda)
       setCrr(res.crr)
@@ -251,70 +280,60 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     setFetchingW(true)
     setWeatherError(null)
     try {
-      const mid = Math.floor(data.lat.length / 2)
-      const ds = startTime.toISOString().split('T')[0]
-      const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl`
-      const r = await fetch(u)
-      if (!r.ok) throw new Error('Weather service unavailable')
-      const j = await r.json()
-      if (j.hourly) {
-        const h = startTime.getUTCHours()
-        const wind10m = j.hourly.wind_speed_10m?.[h]
-        const windDir = j.hourly.wind_direction_10m?.[h]
-        const tempC = j.hourly.temperature_2m?.[h]
-        const humidity = j.hourly.relative_humidity_2m?.[h]
-        const pressureHpa = j.hourly.surface_pressure?.[h] ?? j.hourly.pressure_msl?.[h]
+      const len = Array.isArray(data.dist) ? data.dist.length : 0
+      const sIdx = len > 0 ? Math.max(0, Math.min(len - 1, Math.floor((range[0] / 100) * len))) : 0
+      const selectedStartTime = Array.isArray(data.t) && Number.isFinite(data.t[sIdx])
+        ? new Date(startTime.getTime() + data.t[sIdx] * 1000)
+        : startTime
 
-        const hasWind = Number.isFinite(wind10m)
-        const hasTemp = Number.isFinite(tempC)
-        const hasHumidity = Number.isFinite(humidity)
-        const hasPressure = Number.isFinite(pressureHpa)
-        let appliedAny = false
+      const wx = await fetchRideWeatherSnapshot({ data, startTime: selectedStartTime, sampleIndex: sIdx })
+      let appliedAny = false
 
-        if (weatherApplyWind && hasWind) {
-          // Convert 10 m wind (km/h) to rider-height m/s using the wind profile power law factor.
-          setWSpd(parseFloat((wind10m / 3.6 * 0.6).toFixed(2)))
-          if (Number.isFinite(windDir)) setWDir(windDir)
+      if (weatherApplyWind && Number.isFinite(wx.windSpeedRiderMs)) {
+        setWSpd(wx.windSpeedRiderMs)
+        if (Number.isFinite(wx.windDirectionDeg)) setWDir(wx.windDirectionDeg)
+        appliedAny = true
+      }
+
+      if (weatherApplyRho && Number.isFinite(wx.temperatureC)) {
+        setRhoTemp(parseFloat(wx.temperatureC.toFixed(1)))
+      }
+      if (weatherApplyRho && Number.isFinite(wx.humidityPct)) {
+        setRhoHumidity(Math.round(wx.humidityPct))
+      }
+
+      if (weatherApplyRho && Number.isFinite(wx.temperatureC) && Number.isFinite(wx.humidityPct)) {
+        if (Number.isFinite(wx.pressureHpa)) {
+          setRhoUseElevation(false)
+          setRhoPressure(parseFloat(wx.pressureHpa.toFixed(1)))
+          setRho(calculateAirDensity({
+            temperature: wx.temperatureC,
+            humidity: wx.humidityPct,
+            pressure: wx.pressureHpa
+          }))
+          appliedAny = true
+        } else {
+          const elev = Number.isFinite(wx.elevationM) ? wx.elevationM : rhoElevation
+          setRhoUseElevation(true)
+          if (Number.isFinite(wx.elevationM)) setRhoElevation(Math.round(wx.elevationM))
+          setRho(calculateAirDensity({
+            temperature: wx.temperatureC,
+            humidity: wx.humidityPct,
+            elevation: elev
+          }))
           appliedAny = true
         }
+      }
 
-        if (weatherApplyRho && hasTemp) setRhoTemp(parseFloat(tempC.toFixed(1)))
-        if (weatherApplyRho && hasHumidity) setRhoHumidity(Math.round(humidity))
-
-        if (weatherApplyRho && hasTemp && hasHumidity) {
-          if (hasPressure) {
-            setRhoUseElevation(false)
-            setRhoPressure(parseFloat(pressureHpa.toFixed(1)))
-            setRho(calculateAirDensity({
-              temperature: tempC,
-              humidity,
-              pressure: pressureHpa
-            }))
-            appliedAny = true
-          } else {
-            const elev = Number.isFinite(data.ele?.[mid]) ? data.ele[mid] : rhoElevation
-            setRhoUseElevation(true)
-            if (Number.isFinite(data.ele?.[mid])) setRhoElevation(Math.round(elev))
-            setRho(calculateAirDensity({
-              temperature: tempC,
-              humidity,
-              elevation: elev
-            }))
-            appliedAny = true
-          }
-        }
-
-        if (!appliedAny) {
-          setWeatherError('No data for this time')
-        }
-      } else {
-        setWeatherError('No weather data available')
+      if (!appliedAny) {
+        setWeatherError('Weather data found, but not enough for selected updates')
       }
     } catch (e) {
       console.error(e)
-      setWeatherError('Failed to fetch')
+      setWeatherError(e?.message || 'Failed to fetch weather')
+    } finally {
+      setFetchingW(false)
     }
-    setFetchingW(false)
   }
 
   // Saving state
@@ -684,7 +703,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   return (
     <div className="flex h-full">
       {/* Sidebar Controls */}
-      <div className="w-72 flex-shrink-0 border-r border-dark-border overflow-y-auto p-4 space-y-4">
+      <div className="w-72 flex-shrink-0 border-r border-dark-border overflow-y-auto p-4 flex flex-col gap-4">
         {/* Header */}
         <div className="flex items-center gap-2">
           <button onClick={onBack} className="text-gray-400 hover:text-white">
@@ -793,7 +812,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 </p>
               )}
               <button onClick={resetAnalysis} className="w-full mt-2 text-xs text-gray-400 hover:text-white border border-dark-border rounded py-1 hover:bg-dark-input transition-colors">
-                Reset
+                Clear & Reset
               </button>
             </div>
           )}
@@ -801,32 +820,141 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
         {data && (
           <>
-            {/* Solver */}
-            <div className="card">
-              <h3 className="label-sm mb-3">Solver</h3>
+            {/* Analysis */}
+            <div className="card order-2">
+              <h3 className="label-sm mb-3">Analysis</h3>
+
+              <div className="mb-3">
+                <label className="text-xxs text-gray-500 mb-1 block">Speed Source</label>
+                <div className="flex bg-dark-input p-0.5 rounded border border-dark-border">
+                  <button
+                    onClick={() => wheelSpeedAvailable && setSpeedSource('wheel')}
+                    disabled={!wheelSpeedAvailable}
+                    className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${speedSource === 'wheel' ? 'bg-cyan-600 text-white' : 'text-gray-400'} ${!wheelSpeedAvailable ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    Speed Sensor
+                  </button>
+                  <button
+                    onClick={() => setSpeedSource('gps')}
+                    className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${speedSource === 'gps' ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
+                  >
+                    GPS
+                  </button>
+                </div>
+                <p className="text-xxs text-gray-500 mt-1">
+                  {wheelSpeedAvailable
+                    ? `Using ${speedSource === 'wheel' ? 'speed sensor' : 'GPS'} speed for solver and VE.`
+                    : 'Speed sensor data not available in this file.'}
+                </p>
+                {speedSource === 'gps' && (
+                  <p className="text-xxs text-yellow-400 mt-1">
+                    Warning: GPS speed is less reliable and may reduce CdA/Crr accuracy.
+                  </p>
+                )}
+              </div>
+
+              <div className="mb-3">
+                <label className="text-xxs text-gray-500 mb-1 block">Power Offset (samples)</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    min="-20"
+                    max="20"
+                    step="1"
+                    value={powerOffset}
+                    onChange={e => setPowerOffset(parseInt(e.target.value, 10))}
+                    className="w-full accent-indigo-500"
+                  />
+                  <input
+                    type="number"
+                    min="-20"
+                    max="20"
+                    step="1"
+                    value={powerOffset}
+                    onChange={e => setPowerOffset(Math.max(-20, Math.min(20, Math.round(safeNum(e.target.value, powerOffset)))))}
+                    className="input-dark w-16 text-center"
+                  />
+                </div>
+                <p className="text-xxs text-gray-500 mt-1">Positive values advance power; negative values delay power. Use this to correct lag from power meter data.</p>
+              </div>
+
+              {/* Air Density */}
+              <div className="mb-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <label className="text-xxs text-gray-500">Air Density (kg/m³)</label>
+                  <button
+                    onClick={() => setShowRhoCalc(!showRhoCalc)}
+                    className="text-xxs text-indigo-400 hover:text-indigo-300"
+                  >
+                    {showRhoCalc ? 'Hide Calculator' : 'Calculator'}
+                  </button>
+                </div>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={rho}
+                  onChange={e => setRho(safeNum(e.target.value, rho))}
+                  className="input-dark w-full"
+                />
+              </div>
+
+              {/* Air Density Calculator (collapsible) */}
+              {showRhoCalc && (
+                <div className="mb-3 p-3 bg-dark-bg rounded border border-dark-border space-y-2">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xxs text-gray-500 mb-1 block">Temperature (°C)</label>
+                      <input type="number" step="0.1" value={rhoTemp} onChange={e => setRhoTemp(safeNum(e.target.value, rhoTemp))} className="input-dark w-full" />
+                    </div>
+                    <div>
+                      <label className="text-xxs text-gray-500 mb-1 block">Humidity (%)</label>
+                      <input type="number" step="1" min="0" max="100" value={rhoHumidity} onChange={e => setRhoHumidity(safeNum(e.target.value, rhoHumidity))} className="input-dark w-full" />
+                    </div>
+                  </div>
+                  <div className="flex bg-dark-input p-0.5 rounded border border-dark-border">
+                    <button onClick={() => setRhoUseElevation(true)} className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}>Elevation</button>
+                    <button onClick={() => setRhoUseElevation(false)} className={`px-2 py-1.5 rounded text-xs font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}>Pressure</button>
+                  </div>
+                  {rhoUseElevation ? (
+                    <div>
+                      <label className="text-xxs text-gray-500 mb-1 block">Elevation (m)</label>
+                      <input type="number" step="1" value={rhoElevation} onChange={e => setRhoElevation(safeNum(e.target.value, rhoElevation))} className="input-dark w-full" />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-xxs text-gray-500 mb-1 block">Pressure (hPa)</label>
+                      <input type="number" step="0.1" value={rhoPressure} onChange={e => setRhoPressure(safeNum(e.target.value, rhoPressure))} className="input-dark w-full" />
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between pt-2 border-t border-dark-border">
+                    <span className="text-sm text-cyan-400 font-mono font-bold">{getCalculatedRho()} kg/m³</span>
+                    <button onClick={applyCalculatedRho} className="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-1.5 rounded text-xs font-medium">Apply</button>
+                  </div>
+                </div>
+              )}
 
               <div className="mb-3 p-2 bg-dark-bg rounded border border-dark-border">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-xxs text-gray-400">Weather Auto-Fill</span>
-                  <button onClick={getWeather} disabled={fetchingW || (!weatherApplyWind && !weatherApplyRho)} className="btn-secondary text-xxs py-0.5 px-2">
-                    {fetchingW ? '...' : 'Fetch'}
+                  <button onClick={getWeather} disabled={!data || !startTime || fetchingW || (!weatherApplyWind && !weatherApplyRho)} className="btn-secondary text-xxs py-1 px-3">
+                    {fetchingW ? 'Fetching...' : 'Fetch Weather'}
                   </button>
                 </div>
                 <p className="text-xxs text-gray-500 mb-2">
-                  Apply fetched weather to wind and/or air density.
+                  Apply fetched weather to wind and/or air density (source: Open-Meteo archive API).
                 </p>
                 <div className="flex gap-2 mb-2">
                   <button
                     onClick={() => setWeatherApplyWind(!weatherApplyWind)}
                     className={`text-xxs px-2 py-0.5 rounded border ${weatherApplyWind ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'}`}
                   >
-                    Update Wind
+                    Wind: {weatherApplyWind ? 'On' : 'Off'}
                   </button>
                   <button
                     onClick={() => setWeatherApplyRho(!weatherApplyRho)}
                     className={`text-xxs px-2 py-0.5 rounded border ${weatherApplyRho ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}
                   >
-                    Update Air Density
+                    Air Density: {weatherApplyRho ? 'On' : 'Off'}
                   </button>
                 </div>
                 {weatherError && (
@@ -838,7 +966,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
                   </div>
                   <div>
-                    <label className="text-xxs text-gray-500 mb-1 block">Dir (°)</label>
+                    <label className="text-xxs text-gray-500 mb-1 block">Direction (°)</label>
                     <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
                   </div>
                 </div>
@@ -854,9 +982,9 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               </button>
             </div>
 
-            {/* Fitted Values */}
-            <div className="card">
-              <h3 className="label-sm mb-3">Fitted Values</h3>
+            {/* Results */}
+            <div className="card order-1">
+              <h3 className="label-sm mb-3">Results</h3>
 
               {/* CdA/Crr Sliders */}
               <div className="space-y-3 mb-3">
@@ -867,13 +995,13 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                   </div>
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={() => setCda(Math.max(cdaMin, cda - cdaNudge))}
+                      onClick={() => setCda(Math.max(effectiveCdaMin, cda - cdaNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
                       title={`-${cdaNudge}`}
                     >−</button>
-                    <input type="range" min={cdaMin} max={cdaMax} step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
+                    <input type="range" min={effectiveCdaMin} max={effectiveCdaMax} step="0.0001" value={cda} onChange={e => setCda(parseFloat(e.target.value))} className="slider-cda flex-1" />
                     <button
-                      onClick={() => setCda(Math.min(cdaMax, cda + cdaNudge))}
+                      onClick={() => setCda(Math.min(effectiveCdaMax, cda + cdaNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-green-500/50 text-sm font-bold"
                       title={`+${cdaNudge}`}
                     >+</button>
@@ -900,13 +1028,13 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                   </div>
                   <div className="flex items-center gap-1">
                     <button
-                      onClick={() => setCrr(Math.max(crrMin, crr - crrNudge))}
+                      onClick={() => setCrr(Math.max(effectiveCrrMin, crr - crrNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
                       title={`-${crrNudge}`}
                     >−</button>
-                    <input type="range" min={crrMin} max={crrMax} step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
+                    <input type="range" min={effectiveCrrMin} max={effectiveCrrMax} step="0.0001" value={crr} onChange={e => setCrr(parseFloat(e.target.value))} className="slider-crr flex-1" />
                     <button
-                      onClick={() => setCrr(Math.min(crrMax, crr + crrNudge))}
+                      onClick={() => setCrr(Math.min(effectiveCrrMax, crr + crrNudge))}
                       className="w-6 h-6 rounded bg-dark-input border border-dark-border text-gray-400 hover:text-white hover:border-blue-500/50 text-sm font-bold"
                       title={`+${crrNudge}`}
                     >+</button>
@@ -935,10 +1063,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     <span>⚠️ Solution at bounds</span>
                   </div>
                   <div className="text-yellow-300/80 text-xxs space-y-0.5">
-                    {railingDetails?.cdaAtLowerBound && <div>CdA at minimum ({cdaMin})</div>}
-                    {railingDetails?.cdaAtUpperBound && <div>CdA at maximum ({cdaMax})</div>}
-                    {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({crrMin})</div>}
-                    {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({crrMax})</div>}
+                    {railingDetails?.cdaAtLowerBound && <div>CdA at minimum ({effectiveCdaMin})</div>}
+                    {railingDetails?.cdaAtUpperBound && <div>CdA at maximum ({effectiveCdaMax})</div>}
+                    {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({effectiveCrrMin})</div>}
+                    {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({effectiveCrrMax})</div>}
                   </div>
                   <div className="text-gray-400 text-xxs mt-1">
                     Try adjusting bounds below
@@ -957,7 +1085,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                         type="number"
                         step="0.01"
                         value={cdaMin}
-                        onChange={e => setCdaMin(parseFloat(e.target.value))}
+                        onChange={e => setCdaMin(safeNum(e.target.value, cdaMin))}
                         className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                       />
                     </div>
@@ -967,7 +1095,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                         type="number"
                         step="0.01"
                         value={cdaMax}
-                        onChange={e => setCdaMax(parseFloat(e.target.value))}
+                        onChange={e => setCdaMax(safeNum(e.target.value, cdaMax))}
                         className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                       />
                     </div>
@@ -979,7 +1107,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                         type="number"
                         step="0.001"
                         value={crrMin}
-                        onChange={e => setCrrMin(parseFloat(e.target.value))}
+                        onChange={e => setCrrMin(safeNum(e.target.value, crrMin))}
                         className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                       />
                     </div>
@@ -989,7 +1117,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                         type="number"
                         step="0.001"
                         value={crrMax}
-                        onChange={e => setCrrMax(parseFloat(e.target.value))}
+                        onChange={e => setCrrMax(safeNum(e.target.value, crrMax))}
                         className="w-full text-xxs bg-dark-input border border-dark-border rounded px-1.5 py-1 text-gray-300"
                       />
                     </div>
@@ -1015,154 +1143,31 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               )}
             </div>
 
-            {/* Experimental Features */}
-            <div className="card border-yellow-500/30">
+            {/* Advanced */}
+            <div className="card border-yellow-500/30 order-3">
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-xxs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
-                <h3 className="label-sm">Experimental</h3>
-              </div>
-
-              {/* Air Density */}
-              <div className="pt-3 border-t border-dark-border mb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-gray-400">Air Density (kg/m³)</span>
-                  <button
-                    onClick={() => setShowRhoCalc(!showRhoCalc)}
-                    className="text-xxs text-indigo-400 hover:text-indigo-300"
-                  >
-                    {showRhoCalc ? 'Hide' : 'Calculator'}
-                  </button>
-                </div>
-                <input
-                  type="number"
-                  step="0.001"
-                  value={rho}
-                  onChange={e => setRho(safeNum(e.target.value, rho))}
-                  className="input-dark w-full"
-                />
-
-                {showRhoCalc && (
-                  <div className="mt-3 p-3 bg-dark-bg rounded border border-dark-border space-y-3">
-                    <p className="text-xxs text-gray-400 font-medium">Calculate from conditions:</p>
-
-                    <div>
-                      <label className="text-xxs text-gray-500 mb-1 block">Temperature (°C)</label>
-                      <input
-                        type="number"
-                        step="0.1"
-                        value={rhoTemp}
-                        onChange={e => setRhoTemp(safeNum(e.target.value, rhoTemp))}
-                        className="input-dark w-full"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex bg-dark-input p-0.5 rounded border border-dark-border mb-2">
-                        <button
-                          onClick={() => setRhoUseElevation(true)}
-                          className={`px-2 py-1 rounded text-xxs font-medium flex-1 ${rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
-                        >
-                          Elevation
-                        </button>
-                        <button
-                          onClick={() => setRhoUseElevation(false)}
-                          className={`px-2 py-1 rounded text-xxs font-medium flex-1 ${!rhoUseElevation ? 'bg-slate-600 text-white' : 'text-gray-400'}`}
-                        >
-                          Pressure
-                        </button>
-                      </div>
-
-                      {rhoUseElevation ? (
-                        <div>
-                          <label className="text-xxs text-gray-500 mb-1 block">Elevation (m)</label>
-                          <input
-                            type="number"
-                            step="1"
-                            value={rhoElevation}
-                            onChange={e => setRhoElevation(safeNum(e.target.value, rhoElevation))}
-                            className="input-dark w-full"
-                          />
-                        </div>
-                      ) : (
-                        <div>
-                          <label className="text-xxs text-gray-500 mb-1 block">Pressure (hPa)</label>
-                          <input
-                            type="number"
-                            step="0.1"
-                            value={rhoPressure}
-                            onChange={e => setRhoPressure(safeNum(e.target.value, rhoPressure))}
-                            className="input-dark w-full"
-                          />
-                        </div>
-                      )}
-                    </div>
-
-                    <div>
-                      <label className="text-xxs text-gray-500 mb-1 block">Relative Humidity (%)</label>
-                      <input
-                        type="number"
-                        step="1"
-                        min="0"
-                        max="100"
-                        value={rhoHumidity}
-                        onChange={e => setRhoHumidity(safeNum(e.target.value, rhoHumidity))}
-                        className="input-dark w-full"
-                      />
-                    </div>
-
-                    <div className="pt-2 border-t border-dark-border">
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xxs text-gray-400">Calculated:</span>
-                        <span className="text-sm font-mono font-bold text-cyan-400">{getCalculatedRho()} kg/m³</span>
-                      </div>
-                      <button
-                        onClick={applyCalculatedRho}
-                        className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 rounded text-xs font-medium transition-colors"
-                      >
-                        Apply
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <h3 className="label-sm">Advanced</h3>
               </div>
 
               {/* Low-pass Filter */}
-              <div className="pt-3 border-t border-dark-border">
-                <span className="text-xs text-gray-400 mb-2 block">Low-pass Filter</span>
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xxs text-gray-500">GPS Elevation</span>
-                    <button
-                      onClick={() => setFilterGps(!filterGps)}
-                      className={`relative w-9 h-5 rounded-full transition-colors ${filterGps ? 'bg-emerald-600' : 'bg-gray-600'}`}
-                    >
-                      <span className={`absolute left-0 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${filterGps ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                    </button>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xxs text-gray-400">Low-pass Filter</span>
+                  <div className="flex gap-2">
+                    <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>GPS</button>
+                    <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual</button>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xxs text-gray-500">Virtual Elevation</span>
-                    <button
-                      onClick={() => setFilterVirtual(!filterVirtual)}
-                      className={`relative w-9 h-5 rounded-full transition-colors ${filterVirtual ? 'bg-emerald-600' : 'bg-gray-600'}`}
-                    >
-                      <span className={`absolute left-0 top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${filterVirtual ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                    </button>
-                  </div>
-                  <div className={`transition-opacity ${(filterGps || filterVirtual) ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                </div>
+                {(filterGps || filterVirtual) && (
+                  <div>
                     <div className="flex justify-between text-xxs mb-1">
                       <span className="text-gray-500">Intensity</span>
                       <span className="text-white font-mono">{filterIntensity}</span>
                     </div>
-                    <input
-                      type="range"
-                      min="1"
-                      max="10"
-                      value={filterIntensity}
-                      onChange={e => setFilterIntensity(parseInt(e.target.value))}
-                      className="w-full accent-emerald-500"
-                    />
+                    <input type="range" min="1" max="10" value={filterIntensity} onChange={e => setFilterIntensity(parseInt(e.target.value, 10))} className="w-full accent-emerald-500" />
                   </div>
-                </div>
+                )}
               </div>
             </div>
 
@@ -1170,7 +1175,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             <button
               onClick={saveRun}
               disabled={saved || saving}
-              className={`w-full py-2 rounded font-medium text-sm transition-all ${
+              className={`w-full py-2 rounded font-medium text-sm transition-all order-4 ${
                 saved
                   ? 'bg-green-600 text-white'
                   : saving

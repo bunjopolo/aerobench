@@ -64,7 +64,7 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
                       </svg>
-                      Save as Preset
+                      Save Simulator Preset
                     </button>
                   )}
                   <button
@@ -160,6 +160,9 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
 }
 
 const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate }) => {
+  const hasVariableField = variableType.inputType !== 'none'
+  const variableName = (customLabel || variableType.label || 'variable').toLowerCase()
+
   const [form, setForm] = useState({
     name: '',
     value_text: '',
@@ -251,7 +254,11 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
     <Dialog isOpen={true} onClose={loading ? undefined : onClose}>
         <div className="p-6 border-b border-dark-border">
           <h2 className="text-xl font-bold text-white">Add Configuration</h2>
-          <p className="text-gray-400 text-sm mt-1">Add a new {customLabel || variableType.label.toLowerCase()} configuration to test</p>
+          <p className="text-gray-400 text-sm mt-1">
+            {hasVariableField
+              ? `Add a new ${variableName} configuration to test`
+              : 'Add a new configuration to test'}
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -268,12 +275,14 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
-              {customLabel || variableType.label}
-            </label>
-            {renderValueInput()}
-          </div>
+          {hasVariableField && (
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                {customLabel || variableType.label}
+              </label>
+              {renderValueInput()}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -315,6 +324,9 @@ const AddConfigurationModal = ({ variableType, customLabel, onClose, onCreate })
 }
 
 const EditConfigurationModal = ({ variation, variableType, customLabel, onClose, onUpdate }) => {
+  const hasVariableField = variableType.inputType !== 'none'
+  const variableName = (customLabel || variableType.label || 'variable').toLowerCase()
+
   const [form, setForm] = useState({
     name: variation.name || '',
     value_text: variation.value_text || '',
@@ -406,7 +418,11 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
     <Dialog isOpen={true} onClose={loading ? undefined : onClose}>
         <div className="p-6 border-b border-dark-border">
           <h2 className="text-xl font-bold text-white">Edit Configuration</h2>
-          <p className="text-gray-400 text-sm mt-1">Update {customLabel || variableType.label.toLowerCase()} configuration details</p>
+          <p className="text-gray-400 text-sm mt-1">
+            {hasVariableField
+              ? `Update ${variableName} configuration details`
+              : 'Update configuration details'}
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
@@ -423,12 +439,14 @@ const EditConfigurationModal = ({ variation, variableType, customLabel, onClose,
             />
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-300 mb-1">
-              {customLabel || variableType.label}
-            </label>
-            {renderValueInput()}
-          </div>
+          {hasVariableField && (
+            <div>
+              <label className="block text-sm font-medium text-gray-300 mb-1">
+                {customLabel || variableType.label}
+              </label>
+              {renderValueInput()}
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-300 mb-1">
@@ -476,7 +494,6 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
   const [showAddModal, setShowAddModal] = useState(false)
   const [editingVariation, setEditingVariation] = useState(null)
   const [analyzingVariation, setAnalyzingVariation] = useState(null)
-  const [showResults, setShowResults] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [deleteVariationDialog, setDeleteVariationDialog] = useState({ open: false, variationId: null, variationName: '' })
   const [presetVariation, setPresetVariation] = useState(null)
@@ -499,10 +516,6 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
 
   const variableType = getVariableType(study.variable_type)
   const variableLabel = study.variable_label || variableType.label
-  const baselineVariation = variations.find(v => v.is_baseline) || variations[0] || null
-  const totalValidRuns = variations.reduce((sum, v) => sum + (v.run_count || 0), 0)
-  const totalRuns = variations.reduce((sum, v) => sum + (v.total_runs || 0), 0)
-  const variationsWithData = variations.filter(v => (v.run_count || 0) > 0).length
 
   // If analyzing a configuration, show the RunAnalysis component
   if (analyzingVariation) {
@@ -514,17 +527,6 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
           setAnalyzingVariation(null)
           refresh()
         }}
-      />
-    )
-  }
-
-  // If showing results, show the StudyResults component
-  if (showResults) {
-    return (
-      <StudyResults
-        study={study}
-        variations={variations}
-        onBack={() => setShowResults(false)}
       />
     )
   }
@@ -561,17 +563,6 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
           </div>
         </div>
         <div className="flex gap-2">
-          {variations.length >= 2 && (
-            <button
-              onClick={() => setShowResults(true)}
-              className="btn-secondary flex items-center gap-2"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-              </svg>
-              View Results
-            </button>
-          )}
           <button
             onClick={() => setShowDeleteConfirm(true)}
             className="btn-secondary text-red-400 hover:bg-red-900/20"
@@ -585,53 +576,7 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
         <p className="text-gray-400 mb-6">{study.description}</p>
       )}
 
-      {baselineVariation && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Baseline CdA</div>
-            <div className="text-2xl font-mono font-bold text-green-400">
-              {baselineVariation.avg_cda?.toFixed(4) || '—'}
-            </div>
-          </div>
-          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Baseline Crr</div>
-            <div className="text-2xl font-mono font-bold text-blue-400">
-              {baselineVariation.avg_crr?.toFixed(5) || '—'}
-            </div>
-          </div>
-          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Valid Runs</div>
-            <div className="text-2xl font-bold text-white">
-              {totalValidRuns}
-              {totalRuns > totalValidRuns && (
-                <span className="text-sm text-gray-500 font-normal">/{totalRuns}</span>
-              )}
-            </div>
-          </div>
-          <div className="bg-dark-card rounded-xl border border-dark-border p-4">
-            <div className="text-xs text-gray-500 uppercase tracking-wide mb-1">Setups With Data</div>
-            <div className="text-2xl font-bold text-amber-400">
-              {variationsWithData}
-            </div>
-            {variations.length > 1 && (
-              <div className="text-xs text-gray-500 mt-1">
-                of {variations.length} configurations
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {baselineVariation && (
-        <div className="mb-6">
-          <button
-            onClick={() => setAnalyzingVariation(baselineVariation)}
-            className="btn-primary w-full md:w-auto"
-          >
-            + Add Run to {baselineVariation.name}
-          </button>
-        </div>
-      )}
+      <StudyResults study={study} variations={variations} embedded />
 
       {/* Configurations Section */}
       <div className="mb-6">
@@ -668,16 +613,6 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
           </div>
         )}
       </div>
-
-      {/* Quick Tips */}
-      {variations.length > 0 && variations.length < 2 && (
-        <div className="bg-blue-900/20 border border-blue-500/30 rounded-xl p-4">
-          <h4 className="text-blue-400 font-medium mb-2">Tip: This baseline is ready</h4>
-          <p className="text-sm text-gray-400">
-            Add 3-5 runs for stability, then add another configuration when you want to compare setups.
-          </p>
-        </div>
-      )}
 
       {/* Add Configuration Modal */}
       {showAddModal && (
