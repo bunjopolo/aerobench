@@ -92,8 +92,7 @@ export const GuideTab = () => {
                 <ul className="text-gray-300 space-y-2 ml-4 list-disc">
                   <li>Test on a day with minimal to no wind.</li>
                   <li>
-                    Repeat the loop <strong>2 or more times</strong>. The more
-                    times you repeat, the better your results will be.
+                    Repeat the loop <strong>2 or more times</strong>.
                   </li>
                   <li>Maintain the same position throughout all laps.</li>
                   <li>

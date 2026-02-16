@@ -64,8 +64,9 @@ export const StudyResults = ({ study, variations, onBack }) => {
   const cdaPadding = (cdaMax - cdaMin) * 0.15
 
   const crrValues = rankedVariations.map(v => v.avg_crr || 0).filter(v => v > 0)
+  const crrErrors = rankedVariations.map(v => v.std_crr || 0)
   const crrMin = crrValues.length > 0 ? Math.min(...crrValues) : 0
-  const crrMax = crrValues.length > 0 ? Math.max(...crrValues) : 0.01
+  const crrMax = crrValues.length > 0 ? Math.max(...crrValues.map((v, i) => v + crrErrors[i])) : 0.01
   const crrPadding = (crrMax - crrMin) * 0.15
 
   // Consistent color palette for configurations
@@ -119,6 +120,12 @@ export const StudyResults = ({ study, variations, onBack }) => {
     type: 'bar',
     marker: {
       color: variationColors
+    },
+    error_y: {
+      type: 'data',
+      array: rankedVariations.map(v => v.std_crr || 0),
+      visible: true,
+      color: '#94a3b8'
     },
     text: rankedVariations.map(v => v.avg_crr?.toFixed(5) || 'N/A'),
     textposition: 'inside',
@@ -257,6 +264,7 @@ export const StudyResults = ({ study, variations, onBack }) => {
                 <th className="p-4">CdA</th>
                 <th className="p-4">± StdDev</th>
                 <th className="p-4">Crr</th>
+                <th className="p-4">Crr ± StdDev</th>
                 <th className="p-4">Runs</th>
                 <th className="p-4">vs Baseline</th>
                 <th className="p-4">Watts @40km/h</th>
@@ -306,6 +314,9 @@ export const StudyResults = ({ study, variations, onBack }) => {
                     </td>
                     <td className="p-4 text-blue-400 font-mono">
                       {v.avg_crr?.toFixed(5) || '-'}
+                    </td>
+                    <td className="p-4 text-gray-400 font-mono text-sm">
+                      {v.std_crr ? `±${v.std_crr.toFixed(5)}` : '-'}
                     </td>
                     <td className="p-4 text-gray-400">
                       {v.run_count}

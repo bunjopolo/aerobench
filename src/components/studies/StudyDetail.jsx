@@ -106,6 +106,11 @@ const VariationCard = ({ variation, variableType, isBaseline, onSetBaseline, onE
               <div className="text-lg font-mono font-semibold text-blue-400">
                 {variation.avg_crr?.toFixed(5) || '—'}
               </div>
+              {variation.std_crr !== null && variation.std_crr > 0 && (
+                <div className="text-xxs text-gray-500 font-mono">
+                  ±{variation.std_crr.toFixed(5)}
+                </div>
+              )}
             </div>
 
             {/* Runs */}

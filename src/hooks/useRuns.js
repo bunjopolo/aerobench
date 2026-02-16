@@ -88,22 +88,30 @@ export const useRuns = (variationId) => {
 
   // Calculate statistics for the runs
   const stats = useCallback(() => {
-    const validRuns = runs.filter(r => r.is_valid && r.fitted_cda)
+    const validRuns = runs.filter(r => r.is_valid && Number.isFinite(r.fitted_cda))
+    const validCrrRuns = validRuns.filter(r => Number.isFinite(r.fitted_crr))
     const n = validRuns.length
 
     if (n === 0) {
-      return { count: 0, avgCda: null, avgCrr: null, stdCda: null, avgRmse: null, avgR2: null }
+      return { count: 0, avgCda: null, avgCrr: null, stdCda: null, stdCrr: null, avgRmse: null, avgR2: null }
     }
 
     const avgCda = validRuns.reduce((sum, r) => sum + r.fitted_cda, 0) / n
-    const avgCrr = validRuns.reduce((sum, r) => sum + (r.fitted_crr || 0), 0) / n
+    const avgCrr = validCrrRuns.length > 0
+      ? validCrrRuns.reduce((sum, r) => sum + r.fitted_crr, 0) / validCrrRuns.length
+      : null
     const avgRmse = validRuns.reduce((sum, r) => sum + (r.rmse || 0), 0) / n
     const avgR2 = validRuns.reduce((sum, r) => sum + (r.r2 || 0), 0) / n
 
     let stdCda = null
+    let stdCrr = null
     if (n > 1) {
       const variance = validRuns.reduce((sum, r) => sum + Math.pow(r.fitted_cda - avgCda, 2), 0) / n
       stdCda = Math.sqrt(variance)
+    }
+    if (validCrrRuns.length > 1 && avgCrr !== null) {
+      const varianceCrr = validCrrRuns.reduce((sum, r) => sum + Math.pow(r.fitted_crr - avgCrr, 2), 0) / validCrrRuns.length
+      stdCrr = Math.sqrt(varianceCrr)
     }
 
     return {
@@ -112,6 +120,7 @@ export const useRuns = (variationId) => {
       avgCda,
       avgCrr,
       stdCda,
+      stdCrr,
       avgRmse,
       avgR2
     }

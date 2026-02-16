@@ -96,7 +96,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [filterVirtual, setFilterVirtual] = useState(false)
   const [filterIntensity, setFilterIntensity] = useState(5)
   // View controls
-  const [autoScaleY, setAutoScaleY] = useState(false)
+  const [autoScaleY, setAutoScaleY] = useState(true)
   const [showRefLines, setShowRefLines] = useState(false)
   const [showLapLines, setShowLapLines] = useState(true)
 
@@ -677,6 +677,12 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                   <span className="font-mono text-gray-400 ml-1">{stats.stdCda.toFixed(4)}</span>
                 </div>
               )}
+              {stats.stdCrr && (
+                <div className="col-span-2">
+                  <span className="text-gray-500">Crr ±</span>
+                  <span className="font-mono text-gray-400 ml-1">{stats.stdCrr.toFixed(5)}</span>
+                </div>
+              )}
             </div>
           ) : (
             <p className="text-xs text-gray-500 italic">No valid runs yet</p>
@@ -937,6 +943,9 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                     {fetchingW ? '...' : 'Fetch'}
                   </button>
                 </div>
+                <p className="text-xxs text-gray-500 mb-2">
+                  Fetches local wind and adjusts 10 m speed to rider height using the wind power profile law.
+                </p>
                 {weatherError && (
                   <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
                 )}

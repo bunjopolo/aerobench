@@ -61,20 +61,30 @@ export const useVariations = (studyId) => {
 
       // Calculate aggregated stats from valid runs
       const variationsWithStats = rawVariations.map(variation => {
-        const validRuns = (variation.runs || []).filter(r => r.is_valid && r.fitted_cda)
+        const validRuns = (variation.runs || []).filter(r => r.is_valid && Number.isFinite(r.fitted_cda))
+        const validCrrRuns = validRuns.filter(r => Number.isFinite(r.fitted_crr))
         const runCount = validRuns.length
 
         let avgCda = null
         let avgCrr = null
         let stdCda = null
+        let stdCrr = null
 
         if (runCount > 0) {
           avgCda = validRuns.reduce((sum, r) => sum + r.fitted_cda, 0) / runCount
-          avgCrr = validRuns.reduce((sum, r) => sum + (r.fitted_crr || 0), 0) / runCount
+
+          if (validCrrRuns.length > 0) {
+            avgCrr = validCrrRuns.reduce((sum, r) => sum + r.fitted_crr, 0) / validCrrRuns.length
+          }
 
           if (runCount > 1) {
             const variance = validRuns.reduce((sum, r) => sum + Math.pow(r.fitted_cda - avgCda, 2), 0) / runCount
             stdCda = Math.sqrt(variance)
+          }
+
+          if (validCrrRuns.length > 1 && avgCrr !== null) {
+            const varianceCrr = validCrrRuns.reduce((sum, r) => sum + Math.pow(r.fitted_crr - avgCrr, 2), 0) / validCrrRuns.length
+            stdCrr = Math.sqrt(varianceCrr)
           }
         }
 
@@ -85,6 +95,7 @@ export const useVariations = (studyId) => {
           avg_cda: avgCda,
           avg_crr: avgCrr,
           std_cda: stdCda,
+          std_crr: stdCrr,
           runs: variation.runs
         }
       })

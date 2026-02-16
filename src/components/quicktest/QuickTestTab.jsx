@@ -96,7 +96,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   const [filterIntensity, setFilterIntensity] = useState(5)
 
   // Y-axis autoscale (scale to visible range)
-  const [autoScaleY, setAutoScaleY] = useState(false)
+  const [autoScaleY, setAutoScaleY] = useState(true)
 
   // Reference lines (start/max elevation)
   const [showRefLines, setShowRefLines] = useState(false)
@@ -1438,11 +1438,11 @@ export const QuickTestTab = ({ presetsHook }) => {
                   {railingDetails?.crrAtLowerBound && <div>Crr at minimum ({crrMin})</div>}
                   {railingDetails?.crrAtUpperBound && <div>Crr at maximum ({crrMax})</div>}
                 </div>
-                <div className="text-gray-400 text-xxs mt-1">
-                  Try adjusting bounds below or use Shen/Climb method
+                  <div className="text-gray-400 text-xxs mt-1">
+                    Try adjusting bounds below
+                  </div>
                 </div>
-              </div>
-            )}
+              )}
 
             {/* Solver Bounds */}
             <details className="mb-3">
@@ -1603,6 +1603,9 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {fetchingW ? 'Fetching...' : 'Fetch Weather'}
               </button>
             </div>
+            <p className="text-xxs text-gray-500 mb-2">
+              Fetches local wind and adjusts 10 m speed to rider height using the wind power profile law.
+            </p>
             {weatherError && (
               <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
             )}

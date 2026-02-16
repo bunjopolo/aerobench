@@ -9,7 +9,8 @@ export const UserMenu = () => {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteText, setDeleteText] = useState('')
   const [deleting, setDeleting] = useState(false)
-  const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
+  const [signingOut, setSigningOut] = useState(false)
+  const [errorDialog, setErrorDialog] = useState({ open: false, title: 'Error', message: '' })
   const menuRef = useRef(null)
 
   useEffect(() => {
@@ -65,13 +66,25 @@ export const UserMenu = () => {
             Settings
           </button>
           <button
-            onClick={() => {
-              signOut()
+            onClick={async () => {
               setIsOpen(false)
+              setSigningOut(true)
+              try {
+                await signOut()
+              } catch (err) {
+                setErrorDialog({
+                  open: true,
+                  title: 'Error Signing Out',
+                  message: err?.message || 'Failed to sign out. Please try again.'
+                })
+              } finally {
+                setSigningOut(false)
+              }
             }}
+            disabled={signingOut}
             className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-slate-700/50 transition-colors"
           >
-            Sign out
+            {signingOut ? 'Signing out...' : 'Sign out'}
           </button>
         </div>
       )}
@@ -157,7 +170,11 @@ export const UserMenu = () => {
                             try {
                               await deleteAccount()
                             } catch (err) {
-                              setErrorDialog({ open: true, message: err.message })
+                              setErrorDialog({
+                                open: true,
+                                title: 'Error Deleting Account',
+                                message: err.message
+                              })
                               setDeleting(false)
                             }
                           }}
@@ -181,8 +198,8 @@ export const UserMenu = () => {
       {/* Error Alert Dialog */}
       <AlertDialog
         isOpen={errorDialog.open}
-        onClose={() => setErrorDialog({ open: false, message: '' })}
-        title="Error Deleting Account"
+        onClose={() => setErrorDialog({ open: false, title: 'Error', message: '' })}
+        title={errorDialog.title}
         message={errorDialog.message}
         variant="error"
       />

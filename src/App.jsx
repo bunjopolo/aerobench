@@ -10,7 +10,6 @@ import { StudiesTab } from './components/studies/StudiesTab'
 import { QuickTestTab } from './components/quicktest/QuickTestTab'
 import { GuideTab } from './components/guide/GuideTab'
 import { ValidationTab } from './components/validation/ValidationTab'
-import { HelpTab } from './components/help'
 import { AdminTab } from './components/admin/AdminTab'
 import { PrivacyPolicy, TermsOfService, CookieNotice } from './components/legal'
 import { ContactModal } from './components/ui'
@@ -65,11 +64,6 @@ const AppContent = () => {
       label: 'Validation',
       iconPath: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'
     },
-    {
-      id: 'help',
-      label: 'Help',
-      iconPath: 'M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z'
-    },
     ...(isAdmin ? [{
       id: 'admin',
       label: 'Admin',
@@ -119,6 +113,16 @@ const AppContent = () => {
   }
   if (legalPage === 'terms') {
     return <TermsOfService onBack={() => setLegalPage(null)} />
+  }
+
+  // Show login screen when signed out
+  if (!isAuthenticated) {
+    return (
+      <LoginPage
+        onShowPrivacy={() => setLegalPage('privacy')}
+        onShowTerms={() => setLegalPage('terms')}
+      />
+    )
   }
 
   return (
@@ -239,7 +243,6 @@ const AppContent = () => {
           {activeTab === 'estimator' && <EstimatorTab presetsHook={presetsHook} />}
           {activeTab === 'guide' && <GuideTab />}
           {activeTab === 'validation' && <ValidationTab />}
-          {activeTab === 'help' && <HelpTab />}
           {activeTab === 'admin' && isAdmin && <AdminTab />}
         </div>
       </div>
