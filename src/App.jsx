@@ -157,28 +157,6 @@ const AppContent = () => {
 
         {isAuthenticated ? (
           <>
-            {/* Support section */}
-            <div className="px-4 pb-4">
-              <form action="https://www.paypal.com/donate" method="post" target="_blank">
-                <input type="hidden" name="business" value="PJXRHYBZ4CRSA" />
-                <input type="hidden" name="no_recurring" value="0" />
-                <input type="hidden" name="item_name" value="All donations go toward hosting fees. Thanks for your support!" />
-                <input type="hidden" name="currency_code" value="CAD" />
-                <button
-                  type="submit"
-                  className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-white text-sm font-medium rounded-lg transition-all shadow-md hover:shadow-lg"
-                >
-                  <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M7.076 21.337H2.47a.641.641 0 0 1-.633-.74L4.944 2.27A.77.77 0 0 1 5.7 1.614h6.932c2.293 0 3.996.6 5.06 1.783.473.525.797 1.118.967 1.763.18.677.209 1.466.089 2.348-.018.13-.04.265-.066.406l-.006.034v.306l.238.137c.201.115.37.24.515.383.353.35.587.79.696 1.31.111.53.099 1.163-.036 1.88-.156.828-.438 1.543-.836 2.122-.362.527-.83.972-1.385 1.316-.535.331-1.16.584-1.856.75-.678.163-1.436.245-2.253.245h-.534c-.403 0-.793.146-1.096.41-.304.264-.497.632-.545 1.029l-.04.306-.677 4.29-.03.216c-.004.032-.013.064-.028.093a.087.087 0 0 1-.062.051H7.076z"/>
-                  </svg>
-                  Support the App
-                </button>
-              </form>
-              <p className="text-xs text-gray-500 text-center mt-2">
-                Help cover server costs
-              </p>
-            </div>
-
             {/* Contact link */}
             <div className="px-4 pb-2">
               <button

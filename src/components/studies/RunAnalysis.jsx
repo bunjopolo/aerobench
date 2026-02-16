@@ -85,6 +85,8 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
   const [weatherError, setWeatherError] = useState(null)
+  const [weatherApplyWind, setWeatherApplyWind] = useState(true)
+  const [weatherApplyRho, setWeatherApplyRho] = useState(true)
   const [maxIterations, setMaxIterations] = useState(500)
   const [saved, setSaved] = useState(false)
 
@@ -242,21 +244,67 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
   const getWeather = async () => {
     if (!data || !startTime) return
+    if (!weatherApplyWind && !weatherApplyRho) {
+      setWeatherError('Enable Wind and/or Air Density update to use fetched weather')
+      return
+    }
     setFetchingW(true)
     setWeatherError(null)
     try {
       const mid = Math.floor(data.lat.length / 2)
       const ds = startTime.toISOString().split('T')[0]
-      const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m`
+      const u = `https://archive-api.open-meteo.com/v1/archive?latitude=${data.lat[mid]}&longitude=${data.lon[mid]}&start_date=${ds}&end_date=${ds}&hourly=wind_speed_10m,wind_direction_10m,temperature_2m,relative_humidity_2m,surface_pressure,pressure_msl`
       const r = await fetch(u)
       if (!r.ok) throw new Error('Weather service unavailable')
       const j = await r.json()
       if (j.hourly) {
         const h = startTime.getUTCHours()
-        if (j.hourly.wind_speed_10m[h] !== undefined) {
-          setWSpd(parseFloat((j.hourly.wind_speed_10m[h] / 3.6 * 0.6).toFixed(2)))
-          setWDir(j.hourly.wind_direction_10m[h])
-        } else {
+        const wind10m = j.hourly.wind_speed_10m?.[h]
+        const windDir = j.hourly.wind_direction_10m?.[h]
+        const tempC = j.hourly.temperature_2m?.[h]
+        const humidity = j.hourly.relative_humidity_2m?.[h]
+        const pressureHpa = j.hourly.surface_pressure?.[h] ?? j.hourly.pressure_msl?.[h]
+
+        const hasWind = Number.isFinite(wind10m)
+        const hasTemp = Number.isFinite(tempC)
+        const hasHumidity = Number.isFinite(humidity)
+        const hasPressure = Number.isFinite(pressureHpa)
+        let appliedAny = false
+
+        if (weatherApplyWind && hasWind) {
+          // Convert 10 m wind (km/h) to rider-height m/s using the wind profile power law factor.
+          setWSpd(parseFloat((wind10m / 3.6 * 0.6).toFixed(2)))
+          if (Number.isFinite(windDir)) setWDir(windDir)
+          appliedAny = true
+        }
+
+        if (weatherApplyRho && hasTemp) setRhoTemp(parseFloat(tempC.toFixed(1)))
+        if (weatherApplyRho && hasHumidity) setRhoHumidity(Math.round(humidity))
+
+        if (weatherApplyRho && hasTemp && hasHumidity) {
+          if (hasPressure) {
+            setRhoUseElevation(false)
+            setRhoPressure(parseFloat(pressureHpa.toFixed(1)))
+            setRho(calculateAirDensity({
+              temperature: tempC,
+              humidity,
+              pressure: pressureHpa
+            }))
+            appliedAny = true
+          } else {
+            const elev = Number.isFinite(data.ele?.[mid]) ? data.ele[mid] : rhoElevation
+            setRhoUseElevation(true)
+            if (Number.isFinite(data.ele?.[mid])) setRhoElevation(Math.round(elev))
+            setRho(calculateAirDensity({
+              temperature: tempC,
+              humidity,
+              elevation: elev
+            }))
+            appliedAny = true
+          }
+        }
+
+        if (!appliedAny) {
           setWeatherError('No data for this time')
         }
       } else {
@@ -757,6 +805,45 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             <div className="card">
               <h3 className="label-sm mb-3">Solver</h3>
 
+              <div className="mb-3 p-2 bg-dark-bg rounded border border-dark-border">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xxs text-gray-400">Weather Auto-Fill</span>
+                  <button onClick={getWeather} disabled={fetchingW || (!weatherApplyWind && !weatherApplyRho)} className="btn-secondary text-xxs py-0.5 px-2">
+                    {fetchingW ? '...' : 'Fetch'}
+                  </button>
+                </div>
+                <p className="text-xxs text-gray-500 mb-2">
+                  Apply fetched weather to wind and/or air density.
+                </p>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => setWeatherApplyWind(!weatherApplyWind)}
+                    className={`text-xxs px-2 py-0.5 rounded border ${weatherApplyWind ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'}`}
+                  >
+                    Update Wind
+                  </button>
+                  <button
+                    onClick={() => setWeatherApplyRho(!weatherApplyRho)}
+                    className={`text-xxs px-2 py-0.5 rounded border ${weatherApplyRho ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}
+                  >
+                    Update Air Density
+                  </button>
+                </div>
+                {weatherError && (
+                  <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xxs text-gray-500 mb-1 block">Speed (m/s)</label>
+                    <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
+                  </div>
+                  <div>
+                    <label className="text-xxs text-gray-500 mb-1 block">Dir (°)</label>
+                    <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
+                  </div>
+                </div>
+              </div>
+
               <div className="mb-3">
                 <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
                 <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark w-full" />
@@ -933,32 +1020,6 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               <div className="flex items-center gap-2 mb-3">
                 <span className="text-xxs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 uppercase font-medium">Beta</span>
                 <h3 className="label-sm">Experimental</h3>
-              </div>
-
-              {/* Environment */}
-              <div className="mb-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-gray-400">Wind Correction</span>
-                  <button onClick={getWeather} disabled={fetchingW} className="btn-secondary text-xxs py-0.5 px-2">
-                    {fetchingW ? '...' : 'Fetch'}
-                  </button>
-                </div>
-                <p className="text-xxs text-gray-500 mb-2">
-                  Fetches local wind and adjusts 10 m speed to rider height using the wind power profile law.
-                </p>
-                {weatherError && (
-                  <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
-                )}
-                <div className="grid grid-cols-2 gap-2 mb-2">
-                  <div>
-                    <label className="text-xxs text-gray-500 mb-1 block">Speed (m/s)</label>
-                    <input type="number" step="0.1" value={wSpd} onChange={e => setWSpd(safeNum(e.target.value, wSpd))} className="input-dark w-full" />
-                  </div>
-                  <div>
-                    <label className="text-xxs text-gray-500 mb-1 block">Dir (°)</label>
-                    <input type="number" step="1" value={wDir} onChange={e => setWDir(safeNum(e.target.value, wDir))} className="input-dark w-full" />
-                  </div>
-                </div>
               </div>
 
               {/* Air Density */}
