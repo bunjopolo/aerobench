@@ -51,7 +51,7 @@ export const DashboardTab = ({ onStudyClick }) => {
             </div>
             <h3 className="text-lg font-semibold text-white mb-2">Virtual Elevation</h3>
             <p className="text-sm text-gray-400">
-              Upload GPX files from your rides and calculate CdA and Crr using the Chung method.
+              Upload FIT files from your rides and calculate CdA and Crr using the Chung method.
             </p>
           </div>
 
@@ -91,8 +91,8 @@ export const DashboardTab = ({ onStudyClick }) => {
             </div>
             <div className="text-center">
               <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white font-bold mx-auto mb-3">2</div>
-              <h4 className="font-medium text-white mb-2">Upload Your GPX</h4>
-              <p className="text-sm text-gray-500">Export from Strava, Garmin, or Wahoo and upload to AeroBench.</p>
+              <h4 className="font-medium text-white mb-2">Upload Your FIT</h4>
+              <p className="text-sm text-gray-500">Export from Garmin, Wahoo, or your head unit platform and upload to AeroBench.</p>
             </div>
             <div className="text-center">
               <div className="w-8 h-8 bg-brand-primary rounded-full flex items-center justify-center text-white font-bold mx-auto mb-3">3</div>

@@ -144,7 +144,7 @@ const AppContent = () => {
           <div className="bg-dark-card rounded-lg p-3">
             <h4 className="text-xs font-medium text-white mb-1">Getting Started</h4>
             <p className="text-xs text-gray-500">
-              Create a study to analyze your aerodynamics from GPX files.
+              Create a study to analyze your aerodynamics from FIT files.
             </p>
           </div>
         </div>

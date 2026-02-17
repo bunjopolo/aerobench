@@ -547,7 +547,7 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
   }
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex items-center gap-4 mb-6">
         <button onClick={onBack} className="text-gray-400 hover:text-white">
@@ -576,7 +576,7 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
         <p className="text-gray-400 mb-6">{study.description}</p>
       )}
 
-      <StudyResults study={study} variations={variations} embedded />
+      <StudyResults study={study} variations={variations} embedded showMethodologyNote={false} />
 
       {/* Configurations Section */}
       <div className="mb-6">
@@ -612,6 +612,11 @@ export const StudyDetail = ({ studyId, onBack, onDelete, presetsHook }) => {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="mt-8 p-4 bg-dark-bg rounded-xl border border-dark-border text-xs text-gray-500">
+        <p className="mb-1"><strong className="text-gray-400">Note:</strong> Watts saved calculated using P = ½ρCdAv³ at reference speed of 40 km/h.</p>
+        <p>Speed gains are approximate and highly dependant on your testing procedure, consistency and data integrity.</p>
       </div>
 
       {/* Add Configuration Modal */}

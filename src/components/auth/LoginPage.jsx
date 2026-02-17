@@ -37,7 +37,7 @@ export const LoginPage = ({ onShowPrivacy, onShowTerms }) => {
         <div className="mt-5 rounded-lg border border-dark-border bg-dark-card/60 p-3">
           <p className="text-xs font-semibold text-gray-300 mb-2">Privacy note</p>
           <p className="text-xs text-gray-400">
-            Your uploaded GPX/FIT files stay in your browser and are not stored on AeroBench servers.
+            Your uploaded FIT ride files (and simulator route GPX files) stay in your browser and are not stored on AeroBench servers.
           </p>
           <p className="text-xs text-gray-500 mt-2">
             We only store your account details and the results/settings you choose to save. If you use weather fetch, location/date is sent to Open-Meteo to get weather data.

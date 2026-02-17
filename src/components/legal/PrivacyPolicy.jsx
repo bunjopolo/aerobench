@@ -36,7 +36,7 @@ export const PrivacyPolicy = ({ onBack }) => {
           <section>
             <h2 className="text-xl font-semibold text-white mb-3">3. Data We Do Not Store</h2>
             <ul className="list-disc list-inside mt-2 space-y-1 ml-4">
-              <li>Raw GPX/FIT file contents</li>
+              <li>Raw FIT ride files or simulator route GPX files</li>
               <li>Full GPS track traces from your uploaded files</li>
             </ul>
             <p className="mt-2">

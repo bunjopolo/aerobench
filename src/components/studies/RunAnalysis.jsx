@@ -133,7 +133,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     }
   }, [speedSource, wheelSpeedAvailable, data])
 
-  // File Handler (supports GPX and FIT)
+  // File Handler (FIT only)
   const onFile = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -799,10 +799,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
         {/* File Upload */}
         <div className="card">
           <label className="block w-full cursor-pointer bg-brand-primary hover:bg-indigo-600 text-white text-center py-2 rounded font-medium transition-colors">
-            Upload GPX/FIT File
-            <input type="file" accept=".gpx,.fit" onChange={onFile} className="hidden" />
+            Upload FIT File
+            <input type="file" accept=".fit" onChange={onFile} className="hidden" />
           </label>
-          {!data && <p className="text-center text-xs text-gray-500 mt-2">Upload a GPX or FIT file to add a run</p>}
+          {!data && <p className="text-center text-xs text-gray-500 mt-2">Upload a FIT file to add a run</p>}
           {data && fileName && (
             <div className="mt-2">
               <p className="text-center text-xs text-gray-400 truncate">{fileName}</p>
@@ -1385,7 +1385,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                   return [
                     { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
                     { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
-                    { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
+                    { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Residuals', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
                     { x: data.dist, y: data.pwr, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }
                   ]
                 })()}
@@ -1398,7 +1398,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             )
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-500 space-y-2">
-              <p className="text-lg">Upload a GPX or FIT file to add a run to this variation</p>
+              <p className="text-lg">Upload a FIT file to add a run to this variation</p>
               <p className="text-sm text-gray-600">Each run will contribute to the variation's average CdA/Crr</p>
             </div>
           )}

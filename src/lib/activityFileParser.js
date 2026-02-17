@@ -244,12 +244,8 @@ export const parseActivityFile = async (file) => {
     // FIT file - binary format
     const arrayBuffer = await file.arrayBuffer()
     return parseFIT(arrayBuffer)
-  } else if (fileName.endsWith('.gpx') || fileName.endsWith('.xml')) {
-    // GPX file - XML format
-    const text = await file.text()
-    return parseGPX(text)
   } else {
-    // Try to detect by content
+    // Try to detect FIT by content
     const arrayBuffer = await file.arrayBuffer()
     const firstBytes = new Uint8Array(arrayBuffer.slice(0, 12))
 
@@ -259,13 +255,7 @@ export const parseActivityFile = async (file) => {
       return parseFIT(arrayBuffer)
     }
 
-    // Otherwise try as GPX
-    const text = new TextDecoder().decode(arrayBuffer)
-    if (text.includes('<gpx') || text.includes('<trk')) {
-      return parseGPX(text)
-    }
-
-    throw new Error('Unsupported file format. Please use GPX or FIT files.')
+    throw new Error('Unsupported file format. Please upload a FIT file.')
   }
 }
 

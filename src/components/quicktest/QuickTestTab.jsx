@@ -184,7 +184,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     setRho(getCalculatedRho())
   }
 
-  // File Handler for first file (supports GPX and FIT)
+  // File Handler for first file (FIT only)
   const onFile = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -201,7 +201,7 @@ export const QuickTestTab = ({ presetsHook }) => {
     }
   }
 
-  // File Handler for second file (climb mode) - supports GPX and FIT
+  // File Handler for second file (climb mode) - FIT only
   const onFile2 = async (e) => {
     const f = e.target.files[0]
     if (!f) return
@@ -1013,7 +1013,7 @@ export const QuickTestTab = ({ presetsHook }) => {
           </div>
           <h2 className="text-xl font-bold text-white mb-2">Quick Test</h2>
           <p className="text-gray-400 mb-6">
-            Analyze a GPX/FIT file to calculate your CdA and Crr values. Create an account to get started.
+            Analyze a FIT file to calculate your CdA and Crr values. Create an account to get started.
           </p>
           <p className="text-sm text-gray-500">
             Sign in from the Dashboard to use this feature.
@@ -1038,8 +1038,8 @@ export const QuickTestTab = ({ presetsHook }) => {
           {method === 'chung' || method === 'sweep' ? (
             <>
               <label className={`block w-full cursor-pointer ${method === 'sweep' ? 'bg-violet-600 hover:bg-violet-500' : 'bg-brand-primary hover:bg-indigo-600'} text-white text-center py-2.5 rounded font-medium transition-colors`}>
-                Upload GPX/FIT File
-                <input type="file" accept=".gpx,.fit" onChange={onFile} className="hidden" />
+                Upload FIT File
+                <input type="file" accept=".fit" onChange={onFile} className="hidden" />
               </label>
               {!data && (
                 <p className="text-center text-xs text-gray-500 mt-2">
@@ -1071,8 +1071,8 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {/* Slow Acceleration File */}
                 <div>
                   <label className="block w-full cursor-pointer bg-amber-600 hover:bg-amber-500 text-white text-center py-2 rounded font-medium text-sm transition-colors">
-                    {fileName ? 'Change Slow Accel File' : 'Upload Slow Accel File'}
-                    <input type="file" accept=".gpx,.fit" onChange={onFile} className="hidden" />
+                    {fileName ? 'Change Slow Accel FIT' : 'Upload Slow Accel FIT'}
+                    <input type="file" accept=".fit" onChange={onFile} className="hidden" />
                   </label>
                   {fileName && (
                     <p className="text-center text-xxs text-amber-400 mt-1 truncate">{fileName}</p>
@@ -1085,8 +1085,8 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {/* Fast Acceleration File */}
                 <div>
                   <label className="block w-full cursor-pointer bg-orange-600 hover:bg-orange-500 text-white text-center py-2 rounded font-medium text-sm transition-colors">
-                    {fileName2 ? 'Change Fast Accel File' : 'Upload Fast Accel File'}
-                    <input type="file" accept=".gpx,.fit" onChange={onFile2} className="hidden" />
+                    {fileName2 ? 'Change Fast Accel FIT' : 'Upload Fast Accel FIT'}
+                    <input type="file" accept=".fit" onChange={onFile2} className="hidden" />
                   </label>
                   {fileName2 && (
                     <p className="text-center text-xxs text-orange-400 mt-1 truncate">{fileName2}</p>
@@ -1099,7 +1099,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
               {!data && !data2 && (
                 <p className="text-center text-xs text-gray-500 mt-2">
-                  Upload two acceleration runs (slow & fast)
+                  Upload two acceleration FIT runs (slow & fast)
                 </p>
               )}
 
@@ -1116,8 +1116,8 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {/* Low Speed File */}
                 <div>
                   <label className="block w-full cursor-pointer bg-cyan-600 hover:bg-cyan-500 text-white text-center py-2 rounded font-medium text-sm transition-colors">
-                    {fileName ? 'Change Low Speed File' : 'Upload Low Speed File'}
-                    <input type="file" accept=".gpx,.fit" onChange={onFile} className="hidden" />
+                    {fileName ? 'Change Low Speed FIT' : 'Upload Low Speed FIT'}
+                    <input type="file" accept=".fit" onChange={onFile} className="hidden" />
                   </label>
                   {fileName && (
                     <p className="text-center text-xxs text-cyan-400 mt-1 truncate">{fileName}</p>
@@ -1130,8 +1130,8 @@ export const QuickTestTab = ({ presetsHook }) => {
                 {/* High Speed File */}
                 <div>
                   <label className="block w-full cursor-pointer bg-yellow-600 hover:bg-yellow-500 text-white text-center py-2 rounded font-medium text-sm transition-colors">
-                    {fileName2 ? 'Change High Speed File' : 'Upload High Speed File'}
-                    <input type="file" accept=".gpx,.fit" onChange={onFile2} className="hidden" />
+                    {fileName2 ? 'Change High Speed FIT' : 'Upload High Speed FIT'}
+                    <input type="file" accept=".fit" onChange={onFile2} className="hidden" />
                   </label>
                   {fileName2 && (
                     <p className="text-center text-xxs text-yellow-400 mt-1 truncate">{fileName2}</p>
@@ -1144,7 +1144,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
               {!data && !data2 && (
                 <p className="text-center text-xs text-gray-500 mt-2">
-                  Upload two files from the same climb
+                  Upload two FIT files from the same climb
                 </p>
               )}
 
@@ -2195,7 +2195,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                       return [
                         { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
                         { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#a78bfa', width: 2 } },
-                        { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' }
+                        { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Residuals', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' }
                       ]
                     })()}
                     layout={{
@@ -2229,7 +2229,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                   return [
                     { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
                     { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
-                    { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Delta', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
+                    { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Residuals', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
                     { x: data.dist, y: data.pwr, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }
                   ]
                 })()}
@@ -2330,7 +2330,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               <div className="text-center">
-                <p className="text-lg">Upload a GPX/FIT file to analyze</p>
+                <p className="text-lg">Upload a FIT file to analyze</p>
                 <p className="text-sm text-gray-600 mt-1">Quick test lets you analyze a single ride without saving</p>
               </div>
             </div>

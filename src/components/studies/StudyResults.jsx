@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { getVariableType } from '../../lib/variableTypes'
 
-export const StudyResults = ({ study, variations, onBack, embedded = false }) => {
+export const StudyResults = ({ study, variations, onBack, embedded = false, showMethodologyNote = true }) => {
   const variableType = getVariableType(study.variable_type)
 
   // Filter to only variations with valid data
@@ -136,19 +136,19 @@ export const StudyResults = ({ study, variations, onBack, embedded = false }) =>
           <h3 className="text-lg font-bold text-white">Detailed Rankings</h3>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs text-gray-400 uppercase border-b border-dark-border">
-                <th className="p-4">Rank</th>
-                <th className="p-4">Variation</th>
-                <th className="p-4">{variableType.label}</th>
-                <th className="p-4">CdA</th>
-                <th className="p-4">± StdDev</th>
-                <th className="p-4">Crr</th>
-                <th className="p-4">Crr ± StdDev</th>
-                <th className="p-4">Runs</th>
-                <th className="p-4">vs Baseline</th>
-                <th className="p-4">Watts @40km/h</th>
+                <th className="px-3 py-2.5">Rank</th>
+                <th className="px-3 py-2.5">Variation</th>
+                <th className="px-3 py-2.5">{variableType.label}</th>
+                <th className="px-3 py-2.5">CdA</th>
+                <th className="px-3 py-2.5">± StdDev</th>
+                <th className="px-3 py-2.5">Crr</th>
+                <th className="px-3 py-2.5">Crr ± StdDev</th>
+                <th className="px-3 py-2.5">Runs</th>
+                <th className="px-3 py-2.5">vs Baseline</th>
+                <th className="px-3 py-2.5">Watts @40km/h</th>
               </tr>
             </thead>
             <tbody>
@@ -165,14 +165,14 @@ export const StudyResults = ({ study, variations, onBack, embedded = false }) =>
                       isBaseline ? 'bg-indigo-900/20' : isBest ? 'bg-green-900/20' : ''
                     }`}
                   >
-                    <td className="p-4">
+                    <td className="px-3 py-2.5">
                       <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full text-xs font-bold ${
                         isBest ? 'bg-green-600 text-white' : 'bg-dark-bg text-gray-400'
                       }`}>
                         {idx + 1}
                       </span>
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-2.5">
                       <div className="flex items-center gap-2">
                         <span className="font-medium text-white">{v.name}</span>
                         {isBaseline && (
@@ -182,27 +182,27 @@ export const StudyResults = ({ study, variations, onBack, embedded = false }) =>
                         )}
                       </div>
                     </td>
-                    <td className="p-4 text-gray-400 text-sm">
+                    <td className="px-3 py-2.5 text-gray-400 text-sm">
                       {variableType.formatValue(v)}
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-2.5">
                       <span className={`font-mono font-bold ${isBest ? 'text-green-400' : 'text-white'}`}>
                         {v.avg_cda.toFixed(4)}
                       </span>
                     </td>
-                    <td className="p-4 text-gray-400 font-mono text-sm">
+                    <td className="px-3 py-2.5 text-gray-400 font-mono text-sm">
                       {v.std_cda ? `±${v.std_cda.toFixed(4)}` : '-'}
                     </td>
-                    <td className="p-4 text-blue-400 font-mono">
+                    <td className="px-3 py-2.5 text-blue-400 font-mono">
                       {v.avg_crr?.toFixed(5) || '-'}
                     </td>
-                    <td className="p-4 text-gray-400 font-mono text-sm">
+                    <td className="px-3 py-2.5 text-gray-400 font-mono text-sm">
                       {v.std_crr ? `±${v.std_crr.toFixed(5)}` : '-'}
                     </td>
-                    <td className="p-4 text-gray-400">
+                    <td className="px-3 py-2.5 text-gray-400">
                       {v.run_count}
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-2.5">
                       {baselineCda && !isBaseline ? (
                         <span className={`font-mono ${cdaDiff < 0 ? 'text-green-400' : cdaDiff > 0 ? 'text-red-400' : 'text-gray-400'}`}>
                           {cdaDiff > 0 ? '+' : ''}{(cdaDiff * 100 / baselineCda).toFixed(1)}%
@@ -211,7 +211,7 @@ export const StudyResults = ({ study, variations, onBack, embedded = false }) =>
                         <span className="text-gray-500">-</span>
                       )}
                     </td>
-                    <td className="p-4">
+                    <td className="px-3 py-2.5">
                       {baselineCda && !isBaseline ? (
                         <span className={`font-mono ${wattsDiff > 0 ? 'text-green-400' : wattsDiff < 0 ? 'text-red-400' : 'text-gray-400'}`}>
                           {wattsDiff > 0 ? '+' : ''}{wattsDiff.toFixed(1)}W
@@ -228,11 +228,12 @@ export const StudyResults = ({ study, variations, onBack, embedded = false }) =>
         </div>
       </div>
 
-      {/* Methodology Note */}
-      <div className="mt-6 p-4 bg-dark-bg rounded-xl border border-dark-border text-xs text-gray-500">
-        <p className="mb-1"><strong className="text-gray-400">Note:</strong> Watts saved calculated using P = ½ρCdAv³ at reference speed of 40 km/h.</p>
-        <p>Speed gains are approximate and highly dependant on your testing procedure, consistency and data integrity.</p>
-      </div>
+      {showMethodologyNote && (
+        <div className="mt-6 p-4 bg-dark-bg rounded-xl border border-dark-border text-xs text-gray-500">
+          <p className="mb-1"><strong className="text-gray-400">Note:</strong> Watts saved calculated using P = ½ρCdAv³ at reference speed of 40 km/h.</p>
+          <p>Speed gains are approximate and highly dependant on your testing procedure, consistency and data integrity.</p>
+        </div>
+      )}
     </div>
   )
 }
