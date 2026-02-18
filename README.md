@@ -1,50 +1,46 @@
 # AeroBench
 
-A web application for analyzing cycling aerodynamics using virtual elevation methods. Upload GPX files from your power meter and calculate your CdA (coefficient of drag area) and Crr (coefficient of rolling resistance).
+[AeroBench](https://aerobench.vercel.app) is a cycling aerodynamics web app for estimating **CdA** and **Crr** from real ride data using virtual elevation methods.
 
-## Features
+## What It Does
 
-### Quick Test
-Analyze a single GPX file without saving. Supports three analysis methods:
-- **Chung Method** - Standard virtual elevation analysis for loop courses
-- **Shen Method** - Two acceleration runs on flat ground to separate CdA from Crr
-- **Climb Method** - Two runs up the same climb at different speeds
+- Analyzes **FIT ride files** to estimate aerodynamic drag and rolling resistance
+- Uses the **Chung virtual elevation workflow** as the primary analysis method
+- Lets you crop analysis ranges by chart selection or lap boundaries
+- Supports speed source selection (**speed sensor** or GPS) and power offset alignment
+- Provides fit diagnostics (RMSE, R², MAE, bias, drift, NRMSE, trend, lag-1 autocorrelation, and observability indicators)
 
-### Studies
-Organize and track your aero testing:
-- **Averaging Mode** - Collect multiple runs to get reliable average values
-- **Comparison Mode** - Test different configurations (helmets, positions, wheels) side-by-side
+## Analysis Workflows
 
-### Estimator
-Predict speed and time based on your measured values:
-- Manual mode for quick calculations
-- Route file mode for realistic terrain simulation
-- Power sensitivity analysis
+## Quick Test
+For fast, single-file analysis without creating a full study.
 
-### Physics Presets
-Save your tested CdA, Crr, mass, efficiency, and air density values. Load them instantly in the Estimator.
+## Studies
+For structured testing with multiple configurations and repeated runs:
+- aggregate results per variation
+- baseline comparison
+- ranked outcomes and estimated performance deltas
 
-### Air Density Calculator
-Calculate air density from temperature, elevation or pressure, and humidity.
+## Setup Analysis
+Analyzes a file and saves fitted values back to a setup workflow.
 
-## The Physics
+## Environment & Terrain Integration
 
-The virtual elevation method solves the power balance equation:
+- Fetches weather from **Open-Meteo** and applies wind/air-density updates
+- Shows the exact fetched weather time and location used
+- Supports **DEM terrain correction**:
+  - manual DEM upload (GeoTIFF / ASCII grid)
+  - automatic DEM fetch from **OpenTopography** based on ride GPS bounds
 
-```
-P = P_aero + P_rolling + P_gravity + P_acceleration
-```
+## Course Simulation
 
-By rearranging and integrating, we calculate a "virtual elevation" that should match GPS elevation when CdA and Crr are correct. The solver optimizes these values to minimize the difference.
+- Includes a **Course Simulator** for estimating performance from CdA/Crr and physics inputs
+- Supports route-based simulation with GPX terrain profiles
 
-## Requirements
+## Built For
 
-- Power meter (dual-sided preferred)
-- Wheel-based speed sensor (GPS speed is too noisy)
-- Head unit recording at 1-second intervals
-
-## Tech Stack
-
-- React + Vite + Tailwind CSS
-- Supabase (PostgreSQL + Auth)
-- Plotly.js for charts
+Cyclists and testers who want a practical, repeatable way to evaluate:
+- position changes
+- equipment changes
+- setup differences
+- real-world aero performance trends
