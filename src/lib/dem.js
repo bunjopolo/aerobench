@@ -324,6 +324,42 @@ const computeActivityBoundingBox = (activityData, startIndex = 0, endIndex = nul
 
 const OPENTOPO_BASE_URL = 'https://portal.opentopography.org/API/globaldem'
 const DEFAULT_DEM_ORDER = ['COP30', 'NASADEM', 'SRTMGL1', 'AW3D30', 'COP90', 'SRTMGL3']
+// OpenTopography can reject very small request windows.
+// Keep a conservative minimum span and expand around the selected center when needed.
+const MIN_OPENTOPO_LAT_SPAN_DEG = 0.01
+const MIN_OPENTOPO_LON_SPAN_DEG = 0.01
+
+const enforceMinimumBboxSpan = (bbox) => {
+  const out = { ...bbox }
+  const latSpan = out.north - out.south
+  const lonSpan = out.east - out.west
+
+  if (latSpan < MIN_OPENTOPO_LAT_SPAN_DEG) {
+    const center = (out.north + out.south) * 0.5
+    const half = MIN_OPENTOPO_LAT_SPAN_DEG * 0.5
+    out.south = clamp(center - half, -90, 90)
+    out.north = clamp(center + half, -90, 90)
+    if (out.north - out.south < MIN_OPENTOPO_LAT_SPAN_DEG) {
+      // Handle poles after clamping.
+      if (out.south <= -90) out.north = clamp(-90 + MIN_OPENTOPO_LAT_SPAN_DEG, -90, 90)
+      if (out.north >= 90) out.south = clamp(90 - MIN_OPENTOPO_LAT_SPAN_DEG, -90, 90)
+    }
+  }
+
+  if (lonSpan < MIN_OPENTOPO_LON_SPAN_DEG) {
+    const center = (out.east + out.west) * 0.5
+    const half = MIN_OPENTOPO_LON_SPAN_DEG * 0.5
+    out.west = clamp(center - half, -180, 180)
+    out.east = clamp(center + half, -180, 180)
+    if (out.east - out.west < MIN_OPENTOPO_LON_SPAN_DEG) {
+      // Handle antimeridian bounds after clamping.
+      if (out.west <= -180) out.east = clamp(-180 + MIN_OPENTOPO_LON_SPAN_DEG, -180, 180)
+      if (out.east >= 180) out.west = clamp(180 - MIN_OPENTOPO_LON_SPAN_DEG, -180, 180)
+    }
+  }
+
+  return out
+}
 
 export const fetchDemFromOpenTopography = async (activityData, {
   apiKey,
@@ -344,24 +380,16 @@ export const fetchDemFromOpenTopography = async (activityData, {
     west: clamp(bboxRaw.west - paddingDeg, -180, 180),
     east: clamp(bboxRaw.east + paddingDeg, -180, 180)
   }
-
-  if (bbox.north - bbox.south < 1e-8) {
-    bbox.south = clamp(bbox.south - 1e-5, -90, 90)
-    bbox.north = clamp(bbox.north + 1e-5, -90, 90)
-  }
-  if (bbox.east - bbox.west < 1e-8) {
-    bbox.west = clamp(bbox.west - 1e-5, -180, 180)
-    bbox.east = clamp(bbox.east + 1e-5, -180, 180)
-  }
+  const clampedBbox = enforceMinimumBboxSpan(bbox)
 
   let lastError = null
   for (const demtype of datasetOrder) {
     const params = new URLSearchParams({
       demtype,
-      south: String(bbox.south),
-      north: String(bbox.north),
-      west: String(bbox.west),
-      east: String(bbox.east),
+      south: String(clampedBbox.south),
+      north: String(clampedBbox.north),
+      west: String(clampedBbox.west),
+      east: String(clampedBbox.east),
       outputFormat,
       API_Key: apiKey
     })
@@ -380,7 +408,7 @@ export const fetchDemFromOpenTopography = async (activityData, {
       return {
         ...dem,
         sourceType: `opentopography:${demtype}`,
-        meta: { demtype, bbox }
+        meta: { demtype, bbox: clampedBbox }
       }
     } catch (err) {
       lastError = err
