@@ -1,20 +1,32 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { AuthProvider, useAuth } from './hooks/useAuth.jsx'
 import { usePhysicsPresets } from './hooks/usePhysicsPresets'
 import { LoginPage } from './components/auth/LoginPage'
 import { UserMenu } from './components/auth/UserMenu'
-import { EstimatorTab } from './components/estimator/EstimatorTab'
-import { DashboardTab } from './components/dashboard/DashboardTab'
-import { StudiesTab } from './components/studies/StudiesTab'
-import { QuickTestTab } from './components/quicktest/QuickTestTab'
-import { GuideTab } from './components/guide/GuideTab'
-import { AdminTab } from './components/admin/AdminTab'
-import { PrivacyPolicy, TermsOfService, CookieNotice } from './components/legal'
+import { CookieNotice } from './components/legal'
 import { ContactModal } from './components/ui'
 
 // Admin email from environment
 const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
+
+const DashboardTab = lazy(() => import('./components/dashboard/DashboardTab').then((m) => ({ default: m.DashboardTab })))
+const StudiesTab = lazy(() => import('./components/studies/StudiesTab').then((m) => ({ default: m.StudiesTab })))
+const QuickTestTab = lazy(() => import('./components/quicktest/QuickTestTab').then((m) => ({ default: m.QuickTestTab })))
+const EstimatorTab = lazy(() => import('./components/estimator/EstimatorTab').then((m) => ({ default: m.EstimatorTab })))
+const GuideTab = lazy(() => import('./components/guide/GuideTab').then((m) => ({ default: m.GuideTab })))
+const AdminTab = lazy(() => import('./components/admin/AdminTab').then((m) => ({ default: m.AdminTab })))
+const PrivacyPolicy = lazy(() => import('./components/legal').then((m) => ({ default: m.PrivacyPolicy })))
+const TermsOfService = lazy(() => import('./components/legal').then((m) => ({ default: m.TermsOfService })))
+
+const TabLoading = () => (
+  <div className="flex items-center justify-center h-full">
+    <div className="text-center">
+      <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-primary mx-auto"></div>
+      <p className="mt-3 text-gray-400 text-sm">Loading...</p>
+    </div>
+  </div>
+)
 
 const AppContent = () => {
   const { user, isAuthenticated, loading: authLoading } = useAuth()
@@ -103,10 +115,18 @@ const AppContent = () => {
 
   // Show legal pages (available even when not authenticated)
   if (legalPage === 'privacy') {
-    return <PrivacyPolicy onBack={() => setLegalPage(null)} />
+    return (
+      <Suspense fallback={<TabLoading />}>
+        <PrivacyPolicy onBack={() => setLegalPage(null)} />
+      </Suspense>
+    )
   }
   if (legalPage === 'terms') {
-    return <TermsOfService onBack={() => setLegalPage(null)} />
+    return (
+      <Suspense fallback={<TabLoading />}>
+        <TermsOfService onBack={() => setLegalPage(null)} />
+      </Suspense>
+    )
   }
 
   // Show login screen when signed out
@@ -209,12 +229,14 @@ const AppContent = () => {
 
         {/* Content Area */}
         <div className="flex-1 relative overflow-auto">
-          {activeTab === 'dashboard' && <DashboardTab onStudyClick={handleStudyClick} />}
-          {activeTab === 'studies' && <StudiesTab initialStudyId={selectedStudyId} onStudyOpened={() => setSelectedStudyId(null)} presetsHook={presetsHook} />}
-          {activeTab === 'quicktest' && <QuickTestTab presetsHook={presetsHook} />}
-          {activeTab === 'estimator' && <EstimatorTab presetsHook={presetsHook} />}
-          {activeTab === 'guide' && <GuideTab />}
-          {activeTab === 'admin' && isAdmin && <AdminTab />}
+          <Suspense fallback={<TabLoading />}>
+            {activeTab === 'dashboard' && <DashboardTab onStudyClick={handleStudyClick} />}
+            {activeTab === 'studies' && <StudiesTab initialStudyId={selectedStudyId} onStudyOpened={() => setSelectedStudyId(null)} presetsHook={presetsHook} />}
+            {activeTab === 'quicktest' && <QuickTestTab presetsHook={presetsHook} />}
+            {activeTab === 'estimator' && <EstimatorTab presetsHook={presetsHook} />}
+            {activeTab === 'guide' && <GuideTab />}
+            {activeTab === 'admin' && isAdmin && <AdminTab />}
+          </Suspense>
         </div>
       </div>
 

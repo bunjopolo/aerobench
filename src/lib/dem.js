@@ -328,9 +328,36 @@ const DEFAULT_DEM_ORDER = ['COP30', 'NASADEM', 'SRTMGL1', 'AW3D30', 'COP90', 'SR
 // Keep a conservative minimum span and expand around the selected center when needed.
 const MIN_OPENTOPO_LAT_SPAN_DEG = 0.01
 const MIN_OPENTOPO_LON_SPAN_DEG = 0.01
+// OpenTopography has a minimum request area check; keep above it with margin.
+const MIN_OPENTOPO_AREA_KM2 = 0.09
+const KM_PER_DEG_LAT = 111.32
+
+const estimateBboxAreaKm2 = (bbox) => {
+  const latSpan = Math.max(0, bbox.north - bbox.south)
+  const lonSpan = Math.max(0, bbox.east - bbox.west)
+  const centerLat = (bbox.north + bbox.south) * 0.5
+  const cosLat = Math.max(0.01, Math.abs(Math.cos(centerLat * Math.PI / 180)))
+  const latKm = latSpan * KM_PER_DEG_LAT
+  const lonKm = lonSpan * KM_PER_DEG_LAT * cosLat
+  return latKm * lonKm
+}
+
+const expandBboxAroundCenter = (bbox, factor) => {
+  const out = { ...bbox }
+  const latHalf = (out.north - out.south) * 0.5 * factor
+  const lonHalf = (out.east - out.west) * 0.5 * factor
+  const latCenter = (out.north + out.south) * 0.5
+  const lonCenter = (out.east + out.west) * 0.5
+
+  out.south = clamp(latCenter - latHalf, -90, 90)
+  out.north = clamp(latCenter + latHalf, -90, 90)
+  out.west = clamp(lonCenter - lonHalf, -180, 180)
+  out.east = clamp(lonCenter + lonHalf, -180, 180)
+  return out
+}
 
 const enforceMinimumBboxSpan = (bbox) => {
-  const out = { ...bbox }
+  let out = { ...bbox }
   const latSpan = out.north - out.south
   const lonSpan = out.east - out.west
 
@@ -355,6 +382,19 @@ const enforceMinimumBboxSpan = (bbox) => {
       // Handle antimeridian bounds after clamping.
       if (out.west <= -180) out.east = clamp(-180 + MIN_OPENTOPO_LON_SPAN_DEG, -180, 180)
       if (out.east >= 180) out.west = clamp(180 - MIN_OPENTOPO_LON_SPAN_DEG, -180, 180)
+    }
+  }
+
+  // Ensure bbox area also clears OpenTopography's minimum area check.
+  let areaKm2 = estimateBboxAreaKm2(out)
+  if (areaKm2 < MIN_OPENTOPO_AREA_KM2) {
+    // Iteratively expand until area threshold is met or bounds are saturated.
+    for (let i = 0; i < 5 && areaKm2 < MIN_OPENTOPO_AREA_KM2; i++) {
+      const safeArea = Math.max(areaKm2, 1e-6)
+      const scale = Math.sqrt(MIN_OPENTOPO_AREA_KM2 / safeArea) * 1.05
+      out = expandBboxAroundCenter(out, Math.max(1.1, Math.min(scale, 10)))
+      areaKm2 = estimateBboxAreaKm2(out)
+      if (out.north <= -90 || out.south >= 90 || out.west <= -180 || out.east >= 180) break
     }
   }
 

@@ -1,1 +1,0 @@
-export { HelpTab } from './HelpTab'
