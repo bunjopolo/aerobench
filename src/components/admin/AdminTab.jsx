@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../../hooks/useAuth'
 import { useFeatureFlags } from '../../hooks/useFeatureFlags'
+import { supabase } from '../../lib/supabase'
 
 // Admin email - set in environment variable for security
 const ADMIN_EMAIL = import.meta.env.VITE_ADMIN_EMAIL
@@ -28,6 +29,22 @@ export const AdminTab = () => {
   const { user } = useAuth()
   const { flags, updateFlag } = useFeatureFlags()
   const [flagUpdating, setFlagUpdating] = useState(null)
+  const [tires, setTires] = useState([])
+  const [tiresLoading, setTiresLoading] = useState(true)
+  const [tireError, setTireError] = useState('')
+  const [tireSaving, setTireSaving] = useState(false)
+  const [editingTireId, setEditingTireId] = useState(null)
+  const [tireForm, setTireForm] = useState({
+    brand: '',
+    model: '',
+    version: '',
+    category: 'road',
+    tire_type: 'tubeless',
+    size_label: '',
+    width_nominal_mm: '',
+    brr_drum_crr: '',
+    is_active: true
+  })
 
   // Check if user is admin
   const isAdmin = user?.email === ADMIN_EMAIL
@@ -38,6 +55,133 @@ export const AdminTab = () => {
     const newValue = !flags[featureKey]
     await updateFlag(featureKey, newValue)
     setFlagUpdating(null)
+  }
+
+  const fetchTires = async () => {
+    setTireError('')
+    setTiresLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('tires')
+        .select('*')
+        .order('brand', { ascending: true })
+        .order('model', { ascending: true })
+        .order('size_label', { ascending: true })
+
+      if (error) throw error
+      setTires(data || [])
+    } catch (err) {
+      setTireError(err.message || 'Failed to load tires')
+    } finally {
+      setTiresLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isAdmin) return
+    fetchTires()
+  }, [isAdmin])
+
+  const handleTireFormChange = (field, value) => {
+    setTireForm(prev => ({ ...prev, [field]: value }))
+  }
+
+  const resetTireForm = () => {
+    setEditingTireId(null)
+    setTireForm({
+      brand: '',
+      model: '',
+      version: '',
+      category: 'road',
+      tire_type: 'tubeless',
+      size_label: '',
+      width_nominal_mm: '',
+      brr_drum_crr: '',
+      is_active: true
+    })
+  }
+
+  const handleSaveTire = async (e) => {
+    e.preventDefault()
+    if (!tireForm.brand.trim() || !tireForm.model.trim()) {
+      setTireError('Brand and model are required')
+      return
+    }
+
+    setTireSaving(true)
+    setTireError('')
+    try {
+      const payload = {
+        brand: tireForm.brand.trim(),
+        model: tireForm.model.trim(),
+        version: tireForm.version.trim() || null,
+        category: tireForm.category,
+        tire_type: tireForm.tire_type || null,
+        size_label: tireForm.size_label.trim() || null,
+        width_nominal_mm: tireForm.width_nominal_mm === '' ? null : Number(tireForm.width_nominal_mm),
+        brr_drum_crr: tireForm.brr_drum_crr === '' ? null : Number(tireForm.brr_drum_crr),
+        is_active: tireForm.is_active
+      }
+
+      let error = null
+      if (editingTireId) {
+        const result = await supabase
+          .from('tires')
+          .update(payload)
+          .eq('id', editingTireId)
+        error = result.error
+      } else {
+        const result = await supabase
+          .from('tires')
+          .insert(payload)
+        error = result.error
+      }
+
+      if (error) throw error
+
+      resetTireForm()
+      await fetchTires()
+    } catch (err) {
+      setTireError(err.message || 'Failed to create tire')
+    } finally {
+      setTireSaving(false)
+    }
+  }
+
+  const handleEditTire = (tire) => {
+    setEditingTireId(tire.id)
+    setTireError('')
+    setTireForm({
+      brand: tire.brand || '',
+      model: tire.model || '',
+      version: tire.version || '',
+      category: tire.category || 'road',
+      tire_type: tire.tire_type || 'tubeless',
+      size_label: tire.size_label || '',
+      width_nominal_mm: tire.width_nominal_mm ?? '',
+      brr_drum_crr: tire.brr_drum_crr ?? '',
+      is_active: tire.is_active ?? true
+    })
+  }
+
+  const handleDeleteTire = async (tire) => {
+    const confirmed = window.confirm(`Delete tire entry "${tire.brand} ${tire.model}"?`)
+    if (!confirmed) return
+
+    setTireError('')
+    try {
+      const { error } = await supabase
+        .from('tires')
+        .delete()
+        .eq('id', tire.id)
+
+      if (error) throw error
+
+      if (editingTireId === tire.id) resetTireForm()
+      await fetchTires()
+    } catch (err) {
+      setTireError(err.message || 'Failed to delete tire')
+    }
   }
 
   if (!isAdmin) {
@@ -132,6 +276,161 @@ export const AdminTab = () => {
               </div>
             )
           })}
+        </div>
+      </div>
+
+      <div className="bg-dark-card rounded-xl p-6 border border-dark-border">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-bold text-white">Tire Catalog</h3>
+            <p className="text-xs text-gray-500">Add basic tire entries for future user-submitted observation data</p>
+          </div>
+          <button
+            onClick={fetchTires}
+            className="text-xs text-gray-400 hover:text-white border border-dark-border px-3 py-1.5 rounded"
+          >
+            Refresh
+          </button>
+        </div>
+
+        <form onSubmit={handleSaveTire} className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
+          <input
+            className="input-dark md:col-span-1"
+            placeholder="Brand *"
+            value={tireForm.brand}
+            onChange={(e) => handleTireFormChange('brand', e.target.value)}
+          />
+          <input
+            className="input-dark md:col-span-1"
+            placeholder="Model *"
+            value={tireForm.model}
+            onChange={(e) => handleTireFormChange('model', e.target.value)}
+          />
+          <input
+            className="input-dark md:col-span-1"
+            placeholder="Version"
+            value={tireForm.version}
+            onChange={(e) => handleTireFormChange('version', e.target.value)}
+          />
+          <select
+            className="input-dark md:col-span-1"
+            value={tireForm.category}
+            onChange={(e) => handleTireFormChange('category', e.target.value)}
+          >
+            <option value="road">Road</option>
+            <option value="gravel">Gravel</option>
+            <option value="mtb">MTB</option>
+          </select>
+
+          <select
+            className="input-dark md:col-span-1"
+            value={tireForm.tire_type}
+            onChange={(e) => handleTireFormChange('tire_type', e.target.value)}
+          >
+            <option value="tubeless">Tubeless</option>
+            <option value="clincher">Clincher</option>
+            <option value="tubular">Tubular</option>
+          </select>
+          <input
+            className="input-dark md:col-span-1"
+            placeholder="Size (e.g. 700x28)"
+            value={tireForm.size_label}
+            onChange={(e) => handleTireFormChange('size_label', e.target.value)}
+          />
+          <input
+            type="number"
+            step="0.1"
+            className="input-dark md:col-span-1"
+            placeholder="Nominal Width (mm)"
+            value={tireForm.width_nominal_mm}
+            onChange={(e) => handleTireFormChange('width_nominal_mm', e.target.value)}
+          />
+          <input
+            type="number"
+            step="0.000001"
+            className="input-dark md:col-span-1"
+            placeholder="BRR Drum Crr"
+            value={tireForm.brr_drum_crr}
+            onChange={(e) => handleTireFormChange('brr_drum_crr', e.target.value)}
+          />
+          <label className="flex items-center gap-2 text-xs text-gray-400 md:col-span-1 px-3 border border-dark-border rounded-lg bg-dark-bg">
+            <input
+              type="checkbox"
+              checked={tireForm.is_active}
+              onChange={(e) => handleTireFormChange('is_active', e.target.checked)}
+            />
+            Active
+          </label>
+
+          <div className="md:col-span-4 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={resetTireForm}
+              className="px-4 py-2 text-sm text-gray-400 hover:text-white border border-dark-border rounded-lg"
+            >
+              {editingTireId ? 'Cancel Edit' : 'Clear'}
+            </button>
+            <button
+              type="submit"
+              disabled={tireSaving}
+              className="btn-primary text-sm px-4 py-2 disabled:opacity-50"
+            >
+              {tireSaving ? 'Saving...' : editingTireId ? 'Update Tire' : 'Add Tire'}
+            </button>
+          </div>
+        </form>
+
+        {tireError && (
+          <div className="text-xs text-red-400 mb-3">{tireError}</div>
+        )}
+
+        <div className="rounded-lg border border-dark-border overflow-hidden">
+          <div className="grid grid-cols-9 gap-2 px-3 py-2 text-xxs uppercase text-gray-500 bg-dark-bg border-b border-dark-border">
+            <span>Brand</span>
+            <span>Model</span>
+            <span>Version</span>
+            <span>Category</span>
+            <span>Type</span>
+            <span>Size</span>
+            <span>Width</span>
+            <span>BRR Crr</span>
+            <span className="text-right">Actions</span>
+          </div>
+
+          {tiresLoading ? (
+            <div className="px-3 py-6 text-sm text-gray-500 text-center">Loading tires...</div>
+          ) : tires.length === 0 ? (
+            <div className="px-3 py-6 text-sm text-gray-500 text-center">No tires yet</div>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              {tires.map(tire => (
+                <div key={tire.id} className="grid grid-cols-9 gap-2 px-3 py-2 text-xs text-gray-300 border-b border-dark-border last:border-b-0">
+                  <span className="truncate">{tire.brand}</span>
+                  <span className="truncate">{tire.model}</span>
+                  <span className="truncate">{tire.version || '-'}</span>
+                  <span className="uppercase">{tire.category}</span>
+                  <span className="capitalize">{tire.tire_type || '-'}</span>
+                  <span className="truncate">{tire.size_label || '-'}</span>
+                  <span>{tire.width_nominal_mm ?? '-'}</span>
+                  <span>{tire.brr_drum_crr ?? '-'}</span>
+                  <span className="flex justify-end gap-2">
+                    <button
+                      onClick={() => handleEditTire(tire)}
+                      className="text-xxs px-2 py-1 rounded border border-dark-border text-gray-300 hover:text-white hover:bg-dark-bg"
+                    >
+                      Edit
+                    </button>
+                    <button
+                      onClick={() => handleDeleteTire(tire)}
+                      className="text-xxs px-2 py-1 rounded border border-red-500/40 text-red-300 hover:text-red-200 hover:bg-red-900/20"
+                    >
+                      Delete
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -84,7 +84,6 @@ export const StudyResults = ({ study, variations, onBack, embedded = false, show
 
       {embedded && (
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-bold text-white">Detailed Rankings</h3>
           <p className="text-xs text-gray-500">{validVariations.length} configurations with valid runs</p>
         </div>
       )}

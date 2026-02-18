@@ -171,6 +171,112 @@ const computeVeStepDelta = (data, i, io, wr, mass, eff, rho, cda, crr, wSpd) => 
   return Number.isFinite(delta) ? delta : 0
 }
 
+export const computeSegmentStats = (data, sIdx, eIdx) => {
+  if (!data || !Array.isArray(data.v) || !Array.isArray(data.ele) || !Array.isArray(data.ds)) {
+    return { gradeVar: 0, speedVar: 0, avgSpeedKph: 0, speedSpanKph: 0 }
+  }
+
+  const segEle = data.ele.slice(sIdx, eIdx)
+  const segV = data.v.slice(sIdx, eIdx).filter(Number.isFinite)
+  const segDs = data.ds.slice(sIdx, eIdx)
+
+  const grades = []
+  for (let i = 1; i < segEle.length; i++) {
+    const d = Number.isFinite(segDs[i]) ? segDs[i] : 0
+    const elev = Number.isFinite(segEle[i]) ? segEle[i] : segEle[i - 1]
+    const prevElev = Number.isFinite(segEle[i - 1]) ? segEle[i - 1] : elev
+    if (d > 0.5) grades.push(((elev - prevElev) / d) * 100)
+  }
+
+  let gradeVar = 0
+  if (grades.length > 1) {
+    const gradeMean = grades.reduce((a, b) => a + b, 0) / grades.length
+    gradeVar = grades.reduce((sum, g) => sum + Math.pow(g - gradeMean, 2), 0) / grades.length
+  }
+
+  const avgSpeed = segV.length > 0 ? segV.reduce((a, b) => a + b, 0) / segV.length : 0
+  const minSpeed = segV.length > 0 ? Math.min(...segV) : 0
+  const maxSpeed = segV.length > 0 ? Math.max(...segV) : 0
+  const speedVar = segV.length > 0
+    ? segV.reduce((sum, s) => sum + Math.pow(s - avgSpeed, 2), 0) / segV.length
+    : 0
+
+  return {
+    gradeVar,
+    speedVar,
+    avgSpeedKph: avgSpeed * 3.6,
+    speedSpanKph: Math.max(0, (maxSpeed - minSpeed) * 3.6)
+  }
+}
+
+// Residual diagnostics for VE fit quality and robustness checks.
+export const computeResidualMetrics = (err, ele, sIdx, eIdx, dist = null) => {
+  if (!Array.isArray(err) || !Array.isArray(ele) || !Number.isFinite(sIdx) || !Number.isFinite(eIdx) || eIdx - sIdx < 2) {
+    return { mae: 0, bias: 0, drift: 0, nrmse: 0, residualSlopeMPerKm: 0, residualLag1: 0 }
+  }
+
+  let absSum = 0
+  let signedSum = 0
+  let sqSum = 0
+  let cnt = 0
+  let eleMin = Infinity
+  let eleMax = -Infinity
+
+  for (let i = sIdx; i < eIdx; i++) {
+    const r = Number.isFinite(err[i]) ? err[i] : 0
+    const e = Number.isFinite(ele[i]) ? ele[i] : 0
+    absSum += Math.abs(r)
+    signedSum += r
+    sqSum += r * r
+    eleMin = Math.min(eleMin, e)
+    eleMax = Math.max(eleMax, e)
+    cnt++
+  }
+
+  const rmse = cnt > 0 ? Math.sqrt(sqSum / cnt) : 0
+  const mae = cnt > 0 ? absSum / cnt : 0
+  const bias = cnt > 0 ? signedSum / cnt : 0
+  const drift = (Number.isFinite(err[eIdx - 1]) ? err[eIdx - 1] : 0) - (Number.isFinite(err[sIdx]) ? err[sIdx] : 0)
+  const elevRange = Math.max(1e-6, eleMax - eleMin)
+  const nrmse = rmse / elevRange
+
+  // Linear trend slope of residual vs distance/index, reported in m per km.
+  let sumX = 0
+  let sumY = 0
+  let sumXX = 0
+  let sumXY = 0
+  for (let i = sIdx; i < eIdx; i++) {
+    const x = Array.isArray(dist) && Number.isFinite(dist[i]) && Number.isFinite(dist[sIdx])
+      ? (dist[i] - dist[sIdx])
+      : (i - sIdx)
+    const y = Number.isFinite(err[i]) ? err[i] : 0
+    sumX += x
+    sumY += y
+    sumXX += x * x
+    sumXY += x * y
+  }
+  const denom = (cnt * sumXX - sumX * sumX)
+  const slopePerMeter = Math.abs(denom) > 1e-12 ? ((cnt * sumXY - sumX * sumY) / denom) : 0
+  const residualSlopeMPerKm = slopePerMeter * 1000
+
+  // Lag-1 autocorrelation of residuals.
+  let lagNum = 0
+  let lagDen = 0
+  const meanErr = cnt > 0 ? signedSum / cnt : 0
+  for (let i = sIdx + 1; i < eIdx; i++) {
+    const a = (Number.isFinite(err[i - 1]) ? err[i - 1] : 0) - meanErr
+    const b = (Number.isFinite(err[i]) ? err[i] : 0) - meanErr
+    lagNum += a * b
+  }
+  for (let i = sIdx; i < eIdx; i++) {
+    const d = (Number.isFinite(err[i]) ? err[i] : 0) - meanErr
+    lagDen += d * d
+  }
+  const residualLag1 = lagDen > 1e-12 ? lagNum / lagDen : 0
+
+  return { mae, bias, drift, nrmse, residualSlopeMPerKm, residualLag1 }
+}
+
 // Solve for velocity given power and conditions.
 // rho is expected to be local ambient air density (kg/m^3).
 // windSpeed in m/s, positive = headwind, negative = tailwind
@@ -428,44 +534,19 @@ export const solveCdaCrr = (
       gradeVar: 0,
       speedVar: 0,
       avgSpeed: 0,
-      quality: 0,
       bounds: { cda: cdaBounds, crr: crrBounds },
       isRailing: Object.values(railingDetails).some(Boolean),
       railingDetails
     }
   }
 
-  const { v, ele, ds } = data
+  const { ele } = data
   const { si: sIdx, ei: eIdx } = range
   const io = Math.round(Number.isFinite(offset) ? offset : 0)
   const wr = (Number.isFinite(wDir) ? wDir : 0) * (Math.PI / 180)
   const windSpeed = Number.isFinite(wSpd) ? wSpd : 0
 
-  // Calculate segment statistics for quality assessment
-  const segEle = ele.slice(sIdx, eIdx)
-  const segV = v.slice(sIdx, eIdx).filter(Number.isFinite)
-  const segDs = ds.slice(sIdx, eIdx)
-
-  // Grade variance
-  const grades = []
-  for (let i = 1; i < segEle.length; i++) {
-    const d = Number.isFinite(segDs[i]) ? segDs[i] : 0
-    const elev = Number.isFinite(segEle[i]) ? segEle[i] : segEle[i - 1]
-    const prevElev = Number.isFinite(segEle[i - 1]) ? segEle[i - 1] : elev
-    if (d > 0.5) grades.push(((elev - prevElev) / d) * 100)
-  }
-  let gradeVar = 0
-  if (grades.length > 1) {
-    const gradeMean = grades.reduce((a, b) => a + b, 0) / grades.length
-    gradeVar = grades.reduce((sum, g) => sum + Math.pow(g - gradeMean, 2), 0) / grades.length
-  }
-
-  // Speed variance
-  const avgSpeed = segV.length > 0 ? segV.reduce((a, b) => a + b, 0) / segV.length : 0
-  const speedVar = segV.length > 0
-    ? segV.reduce((sum, s) => sum + Math.pow(s - avgSpeed, 2), 0) / segV.length
-    : 0
-  const avgSpeedKph = avgSpeed * 3.6
+  const { gradeVar, speedVar, avgSpeedKph } = computeSegmentStats(data, sIdx, eIdx)
 
   // Calculate virtual elevation profile for given CdA/Crr
   // ONLY uses data within selected range [si, ei) - treats it as standalone segment
@@ -567,8 +648,6 @@ export const solveCdaCrr = (
     }
   }
 
-  const rmseForQuality = Number.isFinite(globalBest.rmse) ? globalBest.rmse : LARGE_RESIDUAL
-  const quality = (1 / (1 + rmseForQuality)) * (1 + Math.sqrt(Math.max(0, gradeVar))) * (1 + Math.sqrt(Math.max(0, speedVar)) * 0.5)
   const railingDetails = computeRailingDetails(globalBest.cda, globalBest.crr, cdaBounds, crrBounds)
   const isRailing = Object.values(railingDetails).some(Boolean)
 
@@ -581,7 +660,6 @@ export const solveCdaCrr = (
     gradeVar,
     speedVar,
     avgSpeed: avgSpeedKph,
-    quality,
     bounds: { cda: cdaBounds, crr: crrBounds },
     isRailing,
     railingDetails

@@ -1,15 +1,17 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { parseActivityFile } from '../../lib/gpxParser'
-import { solveCdaCrr, safeNum, GRAVITY } from '../../lib/physics'
+import { solveCdaCrr, safeNum, GRAVITY, computeResidualMetrics, computeSegmentStats } from '../../lib/physics'
 import { lowPassFilter } from '../../lib/preprocessing'
 import { useRuns } from '../../hooks/useRuns'
 import { getVariableType } from '../../lib/variableTypes'
 import { calculateAirDensity } from '../../lib/airDensity'
 import { fetchRideWeatherSnapshot } from '../../lib/weather'
-import { ConfirmDialog, AlertDialog } from '../ui'
+import { parseDemUpload, applyDemToActivity, applyVeSamplingFilter, fetchDemFromOpenTopography } from '../../lib/dem'
+import { ConfirmDialog, AlertDialog, MetricInfoButton } from '../ui'
 
 export const RunAnalysis = ({ variation, study, onBack }) => {
+  const openTopoApiKey = import.meta.env.VITE_OPENTOPO_API_KEY
   const { runs, stats, createRun, toggleValid, deleteRun } = useRuns(variation.id)
   const variableType = getVariableType(study.variable_type)
 
@@ -52,7 +54,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [cdaMin, setCdaMin] = useState(0.15)
   const [cdaMax, setCdaMax] = useState(0.50)
   const [crrMin, setCrrMin] = useState(0.002)
-  const [crrMax, setCrrMax] = useState(0.012)
+  const [crrMax, setCrrMax] = useState(0.02)
   const effectiveCdaMin = Math.min(cdaMin, cdaMax)
   const effectiveCdaMax = Math.max(cdaMin, cdaMax)
   const effectiveCrrMin = Math.min(crrMin, crrMax)
@@ -80,6 +82,9 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [hasPowerData, setHasPowerData] = useState(true)
   const [lapMarkers, setLapMarkers] = useState([])
   const [speedSource, setSpeedSource] = useState('wheel')
+  const [demGrid, setDemGrid] = useState(null)
+  const [demFileName, setDemFileName] = useState(null)
+  const [useDemElevation, setUseDemElevation] = useState(false)
 
   // Environment
   const [wSpd, setWSpd] = useState(0)
@@ -92,9 +97,11 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
   const [weatherError, setWeatherError] = useState(null)
+  const [weatherFetchInfo, setWeatherFetchInfo] = useState(null)
   const [weatherApplyWind, setWeatherApplyWind] = useState(true)
   const [weatherApplyRho, setWeatherApplyRho] = useState(true)
   const [maxIterations, setMaxIterations] = useState(500)
+  const [fetchingDem, setFetchingDem] = useState(false)
   const [saved, setSaved] = useState(false)
 
   // Display
@@ -104,6 +111,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   const [filterGps, setFilterGps] = useState(false)
   const [filterVirtual, setFilterVirtual] = useState(false)
   const [filterIntensity, setFilterIntensity] = useState(5)
+  const [filterDemWithVe, setFilterDemWithVe] = useState(false)
   // View controls
   const [autoScaleY, setAutoScaleY] = useState(true)
   const [showRefLines, setShowRefLines] = useState(false)
@@ -112,6 +120,18 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
   // Dialog state
   const [deleteDialog, setDeleteDialog] = useState({ open: false, runId: null, runName: '' })
   const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
+  const diagnosticInfoItems = [
+    { label: 'RMSE', description: 'Root mean square residual error in meters; lower is better.' },
+    { label: 'R²', description: 'How much elevation variance is explained by VE; closer to 1 is better.' },
+    { label: 'MAE', description: 'Mean absolute residual in meters; less sensitive to outliers than RMSE.' },
+    { label: 'Bias', description: 'Average signed residual in meters; positive means VE tends to sit above GPS.' },
+    { label: 'Drift', description: 'Residual change from start to end of range in meters; near zero is preferred.' },
+    { label: 'NRMSE', description: 'RMSE normalized by elevation range; lower % indicates better relative fit.' },
+    { label: 'Trend', description: 'Residual slope versus distance (m per km); near zero means less systematic drift.' },
+    { label: 'Lag-1 AC', description: 'Residual autocorrelation at one-sample lag; high values indicate structured error.' },
+    { label: 'Speed span', description: 'Speed range in the selected segment; larger span usually improves identifiability.' },
+    { label: 'Grade var', description: 'Variance of segment grade; helps indicate how informative the terrain is.' }
+  ]
 
   const wheelSpeedAvailable = Boolean(
     data?.hasWheelSpeed &&
@@ -119,13 +139,34 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     Array.isArray(data?.aWheel)
   )
 
-  const dataForSolve = useMemo(() => {
-    if (!data) return null
-    if (speedSource === 'wheel' && wheelSpeedAvailable) {
-      return { ...data, v: data.vWheel, a: data.aWheel }
+  const dataWithDem = useMemo(() => {
+    if (!data) return { activity: null, coveragePct: 0 }
+    if (!demGrid) return { activity: data, coveragePct: 0 }
+    const demApplied = applyDemToActivity(data, demGrid)
+    return {
+      activity: { ...data, eleDem: demApplied.elevation },
+      coveragePct: demApplied.coveragePct
     }
-    return { ...data, v: data.vGps || data.v, a: data.aGps || data.a }
-  }, [data, speedSource, wheelSpeedAvailable])
+  }, [data, demGrid])
+
+  const elevationLabel = useDemElevation && demGrid ? 'DEM Elev' : 'GPS Elev'
+
+  const dataForSolve = useMemo(() => {
+    const src = dataWithDem.activity
+    if (!src) return null
+    const selectedV = speedSource === 'wheel' && wheelSpeedAvailable ? src.vWheel : (src.vGps || src.v)
+    const selectedA = speedSource === 'wheel' && wheelSpeedAvailable ? src.aWheel : (src.aGps || src.a)
+    let selectedElevation = useDemElevation && Array.isArray(src.eleDem) ? src.eleDem : src.ele
+    if (useDemElevation && filterDemWithVe && Array.isArray(src.eleDem)) {
+      selectedElevation = applyVeSamplingFilter({
+        elevation: src.eleDem,
+        dist: src.dist,
+        t: src.t,
+        v: selectedV
+      })
+    }
+    return { ...src, ele: selectedElevation, v: selectedV, a: selectedA }
+  }, [dataWithDem, useDemElevation, filterDemWithVe, speedSource, wheelSpeedAvailable])
 
   useEffect(() => {
     if (speedSource === 'wheel' && data && !wheelSpeedAvailable) {
@@ -151,6 +192,43 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     }
   }
 
+  const onDemFile = async (e) => {
+    if (!e.target.files?.length) return
+
+    try {
+      const parsed = await parseDemUpload(e.target.files)
+      setDemGrid(parsed)
+      setDemFileName(Array.from(e.target.files || []).map(file => file.name).join(', '))
+      setUseDemElevation(true)
+    } catch (err) {
+      console.error('DEM parse error:', err)
+      setErrorDialog({ open: true, message: err.message || 'Failed to parse DEM file' })
+    }
+  }
+
+  const fetchDem = async () => {
+    if (!data || fetchingDem) return
+    try {
+      setFetchingDem(true)
+      const len = data?.dist?.length || 0
+      const sIdx = len > 0 ? Math.max(0, Math.min(len - 1, Math.floor((range[0] / 100) * len))) : 0
+      const eIdx = len > 0 ? Math.max(sIdx + 2, Math.min(len, Math.floor((range[1] / 100) * len))) : null
+      const dem = await fetchDemFromOpenTopography(data, {
+        apiKey: openTopoApiKey,
+        startIndex: sIdx,
+        endIndex: eIdx
+      })
+      setDemGrid(dem)
+      setDemFileName(`OpenTopography (${dem.meta?.demtype || 'DEM'})`)
+      setUseDemElevation(true)
+    } catch (err) {
+      console.error('DEM fetch error:', err)
+      setErrorDialog({ open: true, message: err.message || 'Failed to fetch DEM from OpenTopography' })
+    } finally {
+      setFetchingDem(false)
+    }
+  }
+
   // Reset analysis
   const resetAnalysis = () => {
     setCda(0.32)
@@ -163,11 +241,14 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     setFilterGps(false)
     setFilterVirtual(false)
     setFilterIntensity(5)
+    setFilterDemWithVe(false)
     setIsRailing(false)
     setRailingDetails(null)
     setHasPowerData(true)
     setLapMarkers([])
     setSpeedSource('wheel')
+    setUseDemElevation(false)
+    setWeatherFetchInfo(null)
   }
 
   // Simulation calculation - compute virtual elevation for SELECTED RANGE ONLY
@@ -248,8 +329,10 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
     const rmse = cnt > 0 ? Math.sqrt(sqSum / cnt) : 0
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
+    const diagnostics = computeResidualMetrics(err, ele, sIdx, eIdx, dataForSolve?.dist)
+    const observability = computeSegmentStats(dataForSolve, sIdx, eIdx)
 
-    return { vEle, err, sIdx, eIdx, rmse, r2 }
+    return { vEle, err, sIdx, eIdx, rmse, r2, diagnostics, observability }
   }, [dataForSolve, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
 
   // Solvers
@@ -279,6 +362,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     }
     setFetchingW(true)
     setWeatherError(null)
+    setWeatherFetchInfo(null)
     try {
       const len = Array.isArray(data.dist) ? data.dist.length : 0
       const sIdx = len > 0 ? Math.max(0, Math.min(len - 1, Math.floor((range[0] / 100) * len))) : 0
@@ -287,6 +371,11 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
         : startTime
 
       const wx = await fetchRideWeatherSnapshot({ data, startTime: selectedStartTime, sampleIndex: sIdx })
+      setWeatherFetchInfo({
+        timeIso: selectedStartTime.toISOString(),
+        latitude: wx.latitude,
+        longitude: wx.longitude
+      })
       let appliedAny = false
 
       if (weatherApplyWind && Number.isFinite(wx.windSpeedRiderMs)) {
@@ -378,6 +467,11 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     const eIdx = Math.min(Math.floor((range[1] / 100) * data.dist.length), data.dist.length - 1)
     return [data.dist[sIdx] || 0, data.dist[eIdx] || 0]
   }, [data, range])
+
+  const rangeStep = useMemo(() => {
+    const len = data?.dist?.length || 0
+    return len > 0 ? (100 / len) : 1
+  }, [data])
 
   const findDistanceIndex = useCallback((targetDist) => {
     if (!data || !data.dist || data.dist.length === 0) return 0
@@ -491,7 +585,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
   // Calculate Y-axis range for visible data (when autoScaleY is enabled)
   const visibleYRange = useMemo(() => {
-    if (!autoScaleY || !data || !sim) return null
+    if (!autoScaleY || !data || !dataForSolve || !sim) return null
 
     const startDist = distanceRange[0]
     const endDist = distanceRange[1]
@@ -506,7 +600,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     let hasErr = false
     let hasPwr = false
 
-    const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
+    const displayEle = filterGps ? lowPassFilter(dataForSolve.ele, filterIntensity) : dataForSolve.ele
     const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
 
     for (let i = 0; i < data.dist.length; i++) {
@@ -549,7 +643,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     }
 
     return Object.keys(ranges).length > 0 ? ranges : null
-  }, [autoScaleY, data, sim, distanceRange, filterGps, filterVirtual, filterIntensity])
+  }, [autoScaleY, data, dataForSolve, sim, distanceRange, filterGps, filterVirtual, filterIntensity])
 
   // Chart layout with rangeslider and lap markers
   const layout = useMemo(() => {
@@ -582,7 +676,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
     const refShapes = []
     const refAnnotations = []
     if (showRefLines && sim && !sim.emptyRange && data) {
-      const startElev = data.ele[sim.sIdx]
+      const startElev = dataForSolve.ele[sim.sIdx]
 
       let maxVElev = -Infinity
       for (let i = sim.sIdx; i < sim.eIdx; i++) {
@@ -687,7 +781,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
       shapes: [...lapShapes, ...refShapes],
       annotations: [...lapAnnotations, ...refAnnotations]
     }
-  }, [distanceRange, lapMarkers, showLapLines, showRefLines, sim, data, visibleYRange])
+  }, [distanceRange, lapMarkers, showLapLines, showRefLines, sim, data, dataForSolve, visibleYRange])
 
   const handleDeleteRun = (runId, runName) => {
     setDeleteDialog({ open: true, runId, runName })
@@ -798,10 +892,42 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
 
         {/* File Upload */}
         <div className="card">
-          <label className="block w-full cursor-pointer bg-brand-primary hover:bg-indigo-600 text-white text-center py-2 rounded font-medium transition-colors">
+          <label className="btn btn-primary btn-block cursor-pointer">
             Upload FIT File
             <input type="file" accept=".fit" onChange={onFile} className="hidden" />
           </label>
+          <div className="grid grid-cols-2 gap-2 mt-2">
+            <label className="btn btn-neutral btn-block cursor-pointer">
+              Upload DEM
+              <input type="file" accept=".asc,.txt,.tif,.tiff,.tfw,.tifw,.prj" multiple onChange={onDemFile} className="hidden" />
+            </label>
+            <button
+              onClick={fetchDem}
+              disabled={!data || fetchingDem}
+              className="btn btn-secondary btn-block"
+            >
+              {fetchingDem ? 'Fetching DEM...' : 'Fetch DEM'}
+            </button>
+          </div>
+          {demFileName && (
+            <p className="text-center text-xxs text-gray-400 mt-1 truncate">{demFileName}</p>
+          )}
+          <div className="mt-2 flex items-center justify-between">
+            <label className={`text-xxs ${demGrid ? 'text-gray-300' : 'text-gray-500'} flex items-center gap-2`}>
+              <input
+                type="checkbox"
+                checked={useDemElevation}
+                onChange={(e) => setUseDemElevation(e.target.checked)}
+                disabled={!demGrid}
+              />
+              Use DEM Elevation
+            </label>
+            {demGrid && data && (
+              <span className="text-xxs text-gray-400">
+                Coverage: {dataWithDem.coveragePct.toFixed(1)}%
+              </span>
+            )}
+          </div>
           {!data && <p className="text-center text-xs text-gray-500 mt-2">Upload a FIT file to add a run</p>}
           {data && fileName && (
             <div className="mt-2">
@@ -811,7 +937,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                   Warning: No power data detected
                 </p>
               )}
-              <button onClick={resetAnalysis} className="w-full mt-2 text-xs text-gray-400 hover:text-white border border-dark-border rounded py-1 hover:bg-dark-input transition-colors">
+              <button onClick={resetAnalysis} className="btn btn-neutral btn-sm btn-block mt-2">
                 Clear & Reset
               </button>
             </div>
@@ -822,7 +948,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
           <>
             {/* Analysis */}
             <div className="card order-2">
-              <h3 className="label-sm mb-3">Analysis</h3>
+              <h3 className="label-sm mb-3">Solver &amp; Variables</h3>
 
               <div className="mb-3">
                 <label className="text-xxs text-gray-500 mb-1 block">Speed Source</label>
@@ -934,8 +1060,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               )}
 
               <div className="mb-3 p-2 bg-dark-bg rounded border border-dark-border">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xxs text-gray-400">Weather Auto-Fill</span>
+                <div className="flex items-center justify-center mb-2">
                   <button onClick={getWeather} disabled={!data || !startTime || fetchingW || (!weatherApplyWind && !weatherApplyRho)} className="btn-secondary text-xxs py-1 px-3">
                     {fetchingW ? 'Fetching...' : 'Fetch Weather'}
                   </button>
@@ -943,6 +1068,11 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 <p className="text-xxs text-gray-500 mb-2">
                   Apply fetched weather to wind and/or air density (source: Open-Meteo archive API).
                 </p>
+                {weatherFetchInfo && (
+                  <p className="text-xxs text-cyan-300 mb-2">
+                    Fetched for {weatherFetchInfo.timeIso.replace('T', ' ').slice(0, 16)} UTC at {weatherFetchInfo.latitude.toFixed(5)}, {weatherFetchInfo.longitude.toFixed(5)}.
+                  </p>
+                )}
                 <div className="flex gap-2 mb-2">
                   <button
                     onClick={() => setWeatherApplyWind(!weatherApplyWind)}
@@ -1128,16 +1258,44 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 </div>
               </details>
 
-              {/* Fit Quality Metrics */}
+              {/* Fit Metrics */}
               {sim && !sim.emptyRange && (
-                <div className="grid grid-cols-2 gap-2 text-xs p-2 bg-dark-bg rounded border border-dark-border">
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">RMSE</span>
-                    <span className={`font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>{sim.rmse.toFixed(2)}m</span>
+                <div className="text-xs p-2 bg-dark-bg rounded border border-dark-border space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400 uppercase tracking-wide">Diagnostics</span>
+                    <MetricInfoButton title="Diagnostics Guide" items={diagnosticInfoItems} />
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-500">R²</span>
-                    <span className={`font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>{(sim.r2 || 0).toFixed(4)}</span>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">RMSE</span>
+                      <span className={`font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : sim.rmse < 2 ? 'text-yellow-400' : 'text-red-400'}`}>{sim.rmse.toFixed(2)}m</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">R²</span>
+                      <span className={`font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>{(sim.r2 || 0).toFixed(4)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">MAE</span>
+                      <span className="font-mono text-gray-300">{sim.diagnostics.mae.toFixed(2)}m</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Bias</span>
+                      <span className="font-mono text-gray-300">{sim.diagnostics.bias.toFixed(2)}m</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Drift</span>
+                      <span className="font-mono text-gray-300">{sim.diagnostics.drift.toFixed(2)}m</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">NRMSE</span>
+                      <span className="font-mono text-gray-300">{(sim.diagnostics.nrmse * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                  <div className="pt-1 border-t border-dark-border text-xxs text-gray-500 space-y-1">
+                    <div>Trend: <span className="font-mono text-gray-300">{sim.diagnostics.residualSlopeMPerKm.toFixed(2)} m/km</span></div>
+                    <div>Lag-1 AC: <span className="font-mono text-gray-300">{sim.diagnostics.residualLag1.toFixed(3)}</span></div>
+                    <div>Speed span: <span className="font-mono text-gray-300">{sim.observability.speedSpanKph.toFixed(1)} km/h</span></div>
+                    <div>Grade var: <span className="font-mono text-gray-300">{sim.observability.gradeVar.toFixed(2)}</span></div>
                   </div>
                 </div>
               )}
@@ -1151,21 +1309,35 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               </div>
 
               {/* Low-pass Filter */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xxs text-gray-400">Low-pass Filter</span>
-                  <div className="flex gap-2">
+              <div className="space-y-2 rounded-lg border border-dark-border bg-dark-bg/60 p-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xxs text-gray-400">Filters</span>
+                  <div className="flex flex-wrap gap-2">
                     <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>GPS</button>
                     <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual</button>
+                    <button
+                      onClick={() => setFilterDemWithVe(!filterDemWithVe)}
+                      disabled={!useDemElevation}
+                      className={`text-xxs px-2 py-0.5 rounded border ${filterDemWithVe ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'} ${!useDemElevation ? 'opacity-50 cursor-not-allowed' : ''}`}
+                    >
+                      DEM-VE
+                    </button>
                   </div>
                 </div>
                 {(filterGps || filterVirtual) && (
-                  <div>
+                  <div className="pt-1 border-t border-dark-border/70">
                     <div className="flex justify-between text-xxs mb-1">
                       <span className="text-gray-500">Intensity</span>
                       <span className="text-white font-mono">{filterIntensity}</span>
                     </div>
                     <input type="range" min="1" max="10" value={filterIntensity} onChange={e => setFilterIntensity(parseInt(e.target.value, 10))} className="w-full accent-emerald-500" />
+                  </div>
+                )}
+                {filterDemWithVe && useDemElevation && (
+                  <div className="pt-1 border-t border-dark-border/70 space-y-1.5">
+                    <p className="text-xxs text-gray-500">
+                      DEM-VE smooths DEM elevation with a speed and timestep based moving window to match VE sampling.
+                    </p>
                   </div>
                 )}
               </div>
@@ -1175,12 +1347,12 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
             <button
               onClick={saveRun}
               disabled={saved || saving}
-              className={`w-full py-2 rounded font-medium text-sm transition-all order-4 ${
+              className={`btn btn-block order-4 ${
                 saved
-                  ? 'bg-green-600 text-white'
+                  ? 'btn-success'
                   : saving
-                    ? 'bg-gray-600 text-gray-300 cursor-wait'
-                    : 'bg-brand-primary hover:bg-indigo-600 text-white'
+                    ? 'btn-neutral'
+                    : 'btn-primary'
               }`}
             >
               {saved ? 'Saved!' : saving ? 'Saving...' : 'Save Run'}
@@ -1199,12 +1371,12 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               {/* Start nudge buttons */}
               <div className="flex items-center">
                 <button
-                  onClick={() => setRange([Math.max(0, range[0] - 1), range[1]])}
+                  onClick={() => setRange([Math.max(0, range[0] - rangeStep), range[1]])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
                   title="Move start back"
                 >◀</button>
                 <button
-                  onClick={() => setRange([Math.min(range[1] - 1, range[0] + 1), range[1]])}
+                  onClick={() => setRange([Math.min(range[1] - rangeStep, range[0] + rangeStep), range[1]])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
                   title="Move start forward"
                 >▶</button>
@@ -1213,12 +1385,12 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               {/* End nudge buttons */}
               <div className="flex items-center">
                 <button
-                  onClick={() => setRange([range[0], Math.max(range[0] + 1, range[1] - 1)])}
+                  onClick={() => setRange([range[0], Math.max(range[0] + rangeStep, range[1] - rangeStep)])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
                   title="Move end back"
                 >◀</button>
                 <button
-                  onClick={() => setRange([range[0], Math.min(100, range[1] + 1)])}
+                  onClick={() => setRange([range[0], Math.min(100, range[1] + rangeStep)])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
                   title="Move end forward"
                 >▶</button>
@@ -1342,7 +1514,7 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
                 </div>
               )
             })()}
-            {(filterGps || filterVirtual) && (
+            {(filterGps || filterVirtual || (filterDemWithVe && useDemElevation)) && (
               <span className="text-xxs px-2 py-1 rounded bg-emerald-900/50 text-emerald-300 border border-emerald-500/30">
                 Filtered
               </span>
@@ -1379,11 +1551,11 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               <Plot
                 data={(() => {
                   // Use full data for rangeslider visibility
-                  const displayEle = filterGps ? lowPassFilter(data.ele, filterIntensity) : data.ele
+                  const displayEle = filterGps ? lowPassFilter(dataForSolve.ele, filterIntensity) : dataForSolve.ele
                   const displayVEle = filterVirtual ? lowPassFilter(sim.vEle, filterIntensity) : sim.vEle
 
                   return [
-                    { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: 'GPS Elev', line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
+                    { x: data.dist, y: displayEle, type: 'scatter', mode: 'lines', name: elevationLabel, line: { color: '#ef4444', width: 2 }, opacity: 0.6 },
                     { x: data.dist, y: displayVEle, type: 'scatter', mode: 'lines', name: 'Virtual Elev', line: { color: '#06b6d4', width: 2 } },
                     { x: data.dist, y: sim.err, type: 'scatter', mode: 'lines', name: 'Residuals', line: { color: '#a855f7', width: 1 }, xaxis: 'x', yaxis: 'y2', fill: 'tozeroy' },
                     { x: data.dist, y: data.pwr, type: 'scatter', mode: 'lines', name: 'Power', line: { color: '#f97316', width: 1 }, xaxis: 'x', yaxis: 'y3', fill: 'tozeroy', opacity: 0.3 }

@@ -67,16 +67,32 @@ input[type=range]:active::-moz-range-thumb { transform: scale(1.2); background: 
 }
 .input-dark::placeholder { color: #94a3b8; }
 
-.btn-primary {
-  @apply bg-indigo-600 text-white rounded-lg px-4 py-2 font-semibold text-sm transition-all border-none cursor-pointer;
+.btn {
+  @apply inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition-colors border;
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary/50;
 }
-.btn-primary:hover:not(:disabled) { @apply bg-indigo-700; }
-.btn-primary:disabled { @apply opacity-50 cursor-wait; }
+.btn:disabled { @apply opacity-50 cursor-not-allowed; }
+.btn-block { @apply w-full; }
+.btn-sm { @apply px-2.5 py-1.5 text-xs rounded-md; }
 
-.btn-secondary {
-  @apply bg-indigo-500/10 border border-indigo-500/30 text-brand-accent text-xs px-3 py-1 rounded-md transition-all cursor-pointer;
+.btn-primary {
+  @apply btn bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-500;
 }
-.btn-secondary:hover:not(:disabled) { @apply bg-indigo-500/20 text-white; }
+.btn-secondary {
+  @apply btn bg-indigo-500/10 hover:bg-indigo-500/20 text-brand-accent hover:text-white border-indigo-500/30;
+}
+.btn-neutral {
+  @apply btn bg-dark-input hover:bg-slate-700 text-slate-200 border-dark-border;
+}
+.btn-success {
+  @apply btn bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500;
+}
+.btn-warning {
+  @apply btn bg-amber-600 hover:bg-amber-500 text-white border-amber-500;
+}
+.btn-ghost {
+  @apply btn bg-transparent hover:bg-dark-input text-gray-400 hover:text-white border-dark-border;
+}
 
 .tab-btn {
   @apply px-4 py-2 font-medium text-sm border-b-2 border-transparent transition-all text-slate-400 bg-transparent cursor-pointer;

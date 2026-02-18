@@ -1,10 +1,10 @@
 import { useState, useMemo, useEffect, useCallback } from 'react'
 import Plot from 'react-plotly.js'
 import { parseActivityFile } from '../../lib/gpxParser'
-import { solveCdaCrr, safeNum, GRAVITY } from '../../lib/physics'
+import { solveCdaCrr, safeNum, GRAVITY, computeResidualMetrics, computeSegmentStats } from '../../lib/physics'
 import { fetchRideWeatherSnapshot } from '../../lib/weather'
 import { useAnalyses } from '../../hooks/useAnalyses'
-import { AlertDialog } from '../ui'
+import { AlertDialog, MetricInfoButton } from '../ui'
 
 // Session storage key for persisting analysis state
 const SESSION_KEY = 'aerobench_analysis_session'
@@ -47,6 +47,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
   const [busy, setBusy] = useState(false)
   const [fetchingW, setFetchingW] = useState(false)
   const [weatherError, setWeatherError] = useState(null)
+  const [weatherFetchInfo, setWeatherFetchInfo] = useState(null)
   const [maxIterations, setMaxIterations] = useState(500)
   const [saved, setSaved] = useState(false)
 
@@ -56,6 +57,18 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
 
   // Error dialog state
   const [errorDialog, setErrorDialog] = useState({ open: false, message: '' })
+  const diagnosticInfoItems = [
+    { label: 'RMSE', description: 'Root mean square residual error in meters; lower is better.' },
+    { label: 'R²', description: 'How much elevation variance is explained by VE; closer to 1 is better.' },
+    { label: 'MAE', description: 'Mean absolute residual in meters; less sensitive to outliers than RMSE.' },
+    { label: 'Bias', description: 'Average signed residual in meters; positive means VE tends to sit above GPS.' },
+    { label: 'Drift', description: 'Residual change from start to end of range in meters; near zero is preferred.' },
+    { label: 'NRMSE', description: 'RMSE normalized by elevation range; lower % indicates better relative fit.' },
+    { label: 'Trend', description: 'Residual slope versus distance (m per km); near zero means less systematic drift.' },
+    { label: 'Lag-1 AC', description: 'Residual autocorrelation at one-sample lag; high values indicate structured error.' },
+    { label: 'Speed span', description: 'Speed range in the selected segment; larger span usually improves identifiability.' },
+    { label: 'Grade var', description: 'Variance of segment grade; helps indicate how informative the terrain is.' }
+  ]
 
   const wheelSpeedAvailable = Boolean(
     data?.hasWheelSpeed &&
@@ -218,6 +231,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     setHasPowerData(true)
     setLapMarkers([])
     setSpeedSource('wheel')
+    setWeatherFetchInfo(null)
   }
 
   // Simulation calculation - compute virtual elevation for SELECTED RANGE ONLY
@@ -296,8 +310,10 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
 
     const rmse = cnt > 0 ? Math.sqrt(sqSum / cnt) : 0
     const r2 = ssTot > 0 ? 1 - (sqSum / ssTot) : 0
+    const diagnostics = computeResidualMetrics(err, ele, sIdx, eIdx, dataForSolve?.dist)
+    const observability = computeSegmentStats(dataForSolve, sIdx, eIdx)
 
-    return { vEle, err, sIdx, eIdx, rmse, r2 }
+    return { vEle, err, sIdx, eIdx, rmse, r2, diagnostics, observability }
   }, [dataForSolve, cda, crr, mass, eff, rho, offset, wSpd, wDir, range])
 
   // Solvers
@@ -316,6 +332,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     if (!data || !startTime) return
     setFetchingW(true)
     setWeatherError(null)
+    setWeatherFetchInfo(null)
     try {
       const len = Array.isArray(data.dist) ? data.dist.length : 0
       const sIdx = len > 0 ? Math.max(0, Math.min(len - 1, Math.floor((range[0] / 100) * len))) : 0
@@ -324,6 +341,11 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
         : startTime
 
       const wx = await fetchRideWeatherSnapshot({ data, startTime: selectedStartTime, sampleIndex: sIdx })
+      setWeatherFetchInfo({
+        timeIso: selectedStartTime.toISOString(),
+        latitude: wx.latitude,
+        longitude: wx.longitude
+      })
       if (Number.isFinite(wx.windSpeedRiderMs)) {
         setWSpd(wx.windSpeedRiderMs)
         if (Number.isFinite(wx.windDirectionDeg)) setWDir(wx.windDirectionDeg)
@@ -346,6 +368,11 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
     const eIdx = Math.min(Math.floor((range[1] / 100) * data.dist.length), data.dist.length - 1)
     return [data.dist[sIdx] || 0, data.dist[eIdx] || 0]
   }, [data, range])
+
+  const rangeStep = useMemo(() => {
+    const len = data?.dist?.length || 0
+    return len > 0 ? (100 / len) : 1
+  }, [data])
 
   const findDistanceIndex = useCallback((targetDist) => {
     if (!data || !data.dist || data.dist.length === 0) return 0
@@ -513,7 +540,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
 
         {/* File Upload */}
         <div className="card">
-          <label className="block w-full cursor-pointer bg-brand-primary hover:bg-indigo-600 text-white text-center py-2 rounded font-medium transition-colors">
+          <label className="btn btn-primary btn-block cursor-pointer">
             Upload FIT File
             <input type="file" accept=".fit" onChange={onFile} className="hidden" />
           </label>
@@ -526,7 +553,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
                   Warning: No power data detected
                 </p>
               )}
-              <button onClick={resetAnalysis} className="w-full mt-2 text-xs text-gray-400 hover:text-white border border-dark-border rounded py-1 hover:bg-dark-input transition-colors">
+              <button onClick={resetAnalysis} className="btn btn-neutral btn-sm btn-block mt-2">
                 Reset Analysis
               </button>
             </div>
@@ -597,7 +624,7 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
                 <label className="text-xxs text-gray-500 mb-1 block">Max Iterations</label>
                 <div className="flex gap-2">
                   <input type="number" min="50" max="2000" step="50" value={maxIterations} onChange={e => setMaxIterations(safeNum(e.target.value, maxIterations))} className="input-dark flex-1" />
-                  <button onClick={() => setMaxIterations(500)} className="px-2 text-xs text-gray-400 hover:text-white border border-dark-border rounded hover:bg-dark-input transition-colors" title="Reset to default (500)">↺</button>
+                  <button onClick={() => setMaxIterations(500)} className="btn btn-ghost btn-sm px-2" title="Reset to default (500)">↺</button>
                 </div>
               </div>
 
@@ -654,6 +681,11 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
               <p className="text-xxs text-gray-500 mb-2">
                 Weather source: Open-Meteo archive API.
               </p>
+              {weatherFetchInfo && (
+                <p className="text-xxs text-cyan-300 mb-2">
+                  Fetched for {weatherFetchInfo.timeIso.replace('T', ' ').slice(0, 16)} UTC at {weatherFetchInfo.latitude.toFixed(5)}, {weatherFetchInfo.longitude.toFixed(5)}.
+                </p>
+              )}
               {weatherError && (
                 <p className="text-xxs text-red-400 mb-2">{weatherError}</p>
               )}
@@ -670,19 +702,38 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
             </div>
 
             {sim && (
-              <div className="grid grid-cols-2 gap-2">
-                <div className="text-center p-2 rounded bg-dark-bg border border-dark-border">
-                  <span className="text-xs text-gray-500 uppercase">RMSE</span>
-                  <div className={`text-xl font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : 'text-indigo-400'}`}>
-                    {sim.rmse.toFixed(3)}m
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="text-center p-2 rounded bg-dark-bg border border-dark-border">
+                    <span className="text-xs text-gray-500 uppercase">RMSE</span>
+                    <div className={`text-xl font-mono font-bold ${sim.rmse < 1 ? 'text-emerald-400' : 'text-indigo-400'}`}>
+                      {sim.rmse.toFixed(3)}m
+                    </div>
+                  </div>
+                  <div className="text-center p-2 rounded bg-dark-bg border border-dark-border">
+                    <span className="text-xs text-gray-500 uppercase">R²</span>
+                    <div className={`text-xl font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>
+                      {sim.r2.toFixed(4)}
+                    </div>
                   </div>
                 </div>
-                <div className="text-center p-2 rounded bg-dark-bg border border-dark-border">
-                  <span className="text-xs text-gray-500 uppercase">R²</span>
-                  <div className={`text-xl font-mono font-bold ${sim.r2 > 0.95 ? 'text-emerald-400' : sim.r2 > 0.9 ? 'text-yellow-400' : 'text-red-400'}`}>
-                    {sim.r2.toFixed(4)}
+
+                <details className="text-xs p-2 rounded bg-dark-bg border border-dark-border">
+                  <summary className="cursor-pointer text-gray-300 font-medium">Diagnostics</summary>
+                  <div className="flex items-center justify-end mt-1">
+                    <MetricInfoButton title="Diagnostics Guide" items={diagnosticInfoItems} />
                   </div>
-                </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1 mt-2">
+                    <span className="text-gray-500">MAE</span><span className="font-mono text-gray-300 text-right">{sim.diagnostics.mae.toFixed(2)}m</span>
+                    <span className="text-gray-500">Bias</span><span className="font-mono text-gray-300 text-right">{sim.diagnostics.bias.toFixed(2)}m</span>
+                    <span className="text-gray-500">Drift</span><span className="font-mono text-gray-300 text-right">{sim.diagnostics.drift.toFixed(2)}m</span>
+                    <span className="text-gray-500">NRMSE</span><span className="font-mono text-gray-300 text-right">{(sim.diagnostics.nrmse * 100).toFixed(1)}%</span>
+                    <span className="text-gray-500">Trend</span><span className="font-mono text-gray-300 text-right">{sim.diagnostics.residualSlopeMPerKm.toFixed(2)} m/km</span>
+                    <span className="text-gray-500">Lag-1 AC</span><span className="font-mono text-gray-300 text-right">{sim.diagnostics.residualLag1.toFixed(3)}</span>
+                    <span className="text-gray-500">Speed span</span><span className="font-mono text-gray-300 text-right">{sim.observability.speedSpanKph.toFixed(1)} km/h</span>
+                    <span className="text-gray-500">Grade var</span><span className="font-mono text-gray-300 text-right">{sim.observability.gradeVar.toFixed(2)}</span>
+                  </div>
+                </details>
               </div>
             )}
 
@@ -690,12 +741,12 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
             <button
               onClick={saveToSetup}
               disabled={saved || !hasChanges}
-              className={`w-full py-2 rounded font-medium text-sm transition-all ${
+              className={`btn btn-block ${
                 saved
-                  ? 'bg-green-600 text-white'
+                  ? 'btn-success'
                   : hasChanges
-                    ? 'bg-amber-600 hover:bg-amber-500 text-white'
-                    : 'bg-gray-700 text-gray-400 cursor-not-allowed'
+                    ? 'btn-warning'
+                    : 'btn-neutral'
               }`}
             >
               {saved ? 'Saved!' : hasChanges ? 'Save to Setup' : 'No Changes'}
@@ -713,12 +764,12 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
               <span className="text-xs text-gray-400">Range:</span>
               <div className="flex items-center">
                 <button
-                  onClick={() => setRange([Math.max(0, range[0] - 1), range[1]])}
+                  onClick={() => setRange([Math.max(0, range[0] - rangeStep), range[1]])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
                   title="Move start back"
                 >◀</button>
                 <button
-                  onClick={() => setRange([Math.min(range[1] - 1, range[0] + 1), range[1]])}
+                  onClick={() => setRange([Math.min(range[1] - rangeStep, range[0] + rangeStep), range[1]])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
                   title="Move start forward"
                 >▶</button>
@@ -726,12 +777,12 @@ export const AnalysisTab = ({ physics, selectedSetup, onUpdateSetup }) => {
               <span className="text-xs font-mono text-brand-accent">{Math.round(distanceRange[0])}m - {Math.round(distanceRange[1])}m</span>
               <div className="flex items-center">
                 <button
-                  onClick={() => setRange([range[0], Math.max(range[0] + 1, range[1] - 1)])}
+                  onClick={() => setRange([range[0], Math.max(range[0] + rangeStep, range[1] - rangeStep)])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-l border border-dark-border hover:bg-dark-input"
                   title="Move end back"
                 >◀</button>
                 <button
-                  onClick={() => setRange([range[0], Math.min(100, range[1] + 1)])}
+                  onClick={() => setRange([range[0], Math.min(100, range[1] + rangeStep)])}
                   className="text-xxs text-gray-500 hover:text-white px-1 py-0.5 rounded-r border-t border-b border-r border-dark-border hover:bg-dark-input"
                   title="Move end forward"
                 >▶</button>
