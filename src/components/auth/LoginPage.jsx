@@ -1,6 +1,6 @@
 import { useAuth } from '../../hooks/useAuth.jsx'
 
-export const LoginPage = ({ onShowPrivacy, onShowTerms }) => {
+export const LoginPage = ({ onShowPrivacy, onShowTerms, onTryQuickTest }) => {
   const { signInWithGoogle } = useAuth()
 
   return (
@@ -32,6 +32,13 @@ export const LoginPage = ({ onShowPrivacy, onShowTerms }) => {
             Continue with Google
           </button>
 
+          <button
+            type="button"
+            onClick={onTryQuickTest}
+            className="w-full inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-4 rounded-lg border border-indigo-500 shadow-sm transition-colors"
+          >
+            Try Calculator (Saving Disabled)
+          </button>
         </div>
 
         <div className="mt-5 rounded-lg border border-dark-border bg-dark-card/60 p-3">

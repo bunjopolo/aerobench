@@ -1,5 +1,4 @@
 import { lazy, Suspense, useState } from 'react'
-import { Analytics } from '@vercel/analytics/react'
 import { AuthProvider, useAuth } from './hooks/useAuth.jsx'
 import { usePhysicsPresets } from './hooks/usePhysicsPresets'
 import { LoginPage } from './components/auth/LoginPage'
@@ -32,6 +31,7 @@ const AppContent = () => {
   const { user, isAuthenticated, loading: authLoading } = useAuth()
   const presetsHook = usePhysicsPresets()
   const [activeTab, setActiveTab] = useState('dashboard')
+  const [publicView, setPublicView] = useState(null)
   const [legalPage, setLegalPage] = useState(null)
   const [showContact, setShowContact] = useState(false)
   const [selectedStudyId, setSelectedStudyId] = useState(null)
@@ -42,6 +42,17 @@ const AppContent = () => {
   const handleStudyClick = (studyId) => {
     setSelectedStudyId(studyId)
     setActiveTab('studies')
+  }
+
+  const enterPublicQuickTest = () => {
+    setPublicView('quicktest')
+    setActiveTab('quicktest')
+    setLegalPage(null)
+  }
+
+  const leavePublicQuickTest = () => {
+    setPublicView(null)
+    setActiveTab('dashboard')
   }
 
   const navItems = [
@@ -131,10 +142,41 @@ const AppContent = () => {
 
   // Show login screen when signed out
   if (!isAuthenticated) {
+    const guestQuickTest = publicView === 'quicktest' || activeTab === 'quicktest'
+    if (guestQuickTest) {
+      return (
+        <div className="flex h-screen overflow-hidden text-sm bg-dark-bg">
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="border-b border-dark-border bg-dark-bg/95 backdrop-blur px-4 py-3 flex items-center justify-between">
+              <div>
+                <h1 className="text-base font-bold text-white">AeroBench</h1>
+                <p className="text-xxs text-gray-400">Quick Test (Guest Mode)</p>
+              </div>
+              <button
+                onClick={leavePublicQuickTest}
+                className="text-xs px-3 py-1.5 rounded border border-dark-border text-gray-300 hover:text-white hover:border-brand-primary/50 transition-colors"
+              >
+                Sign In
+              </button>
+            </div>
+            <div className="px-4 py-2 text-xs text-amber-300 border-b border-dark-border bg-amber-500/10">
+              Saving is disabled
+            </div>
+            <div className="flex-1 relative overflow-auto">
+              <Suspense fallback={<TabLoading />}>
+                <QuickTestTab presetsHook={null} />
+              </Suspense>
+            </div>
+          </div>
+        </div>
+      )
+    }
+
     return (
       <LoginPage
         onShowPrivacy={() => setLegalPage('privacy')}
         onShowTerms={() => setLegalPage('terms')}
+        onTryQuickTest={enterPublicQuickTest}
       />
     )
   }
@@ -253,7 +295,6 @@ function App() {
   return (
     <AuthProvider>
       <AppContent />
-      <Analytics />
     </AuthProvider>
   )
 }

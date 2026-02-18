@@ -22,6 +22,7 @@ export const QuickTestTab = ({ presetsHook }) => {
   const hasSweepMethod = isFeatureEnabled('method_sweep')
   const hasAnyExtraMethod = hasShenMethod || hasClimbMethod || hasSweepMethod
   const [showSavePreset, setShowSavePreset] = useState(false)
+  const canSavePreset = Boolean(user && presetsHook && typeof presetsHook.createPreset === 'function')
 
   // Physics inputs
   const [mass, setMass] = useState(80)
@@ -1116,27 +1117,6 @@ export const QuickTestTab = ({ presetsHook }) => {
     }
   }, [distanceRange, distanceRange2, visibleYRange, lapMarkers, showLapLines, showRefLines, sim, data, data2, dataForSolve, method])
 
-  if (!user) {
-    return (
-      <div className="flex items-center justify-center h-full p-6">
-        <div className="text-center max-w-md">
-          <div className="w-16 h-16 bg-brand-primary/20 rounded-2xl flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-brand-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-          </div>
-          <h2 className="text-xl font-bold text-white mb-2">Quick Test</h2>
-          <p className="text-gray-400 mb-6">
-            Analyze a FIT file to calculate your CdA and Crr values. Create an account to get started.
-          </p>
-          <p className="text-sm text-gray-500">
-            Sign in from the Dashboard to use this feature.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="flex h-full">
       {/* Sidebar Controls */}
@@ -1907,6 +1887,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
             {/* Save Button */}
             {((method === 'chung' && sim && !sim.emptyRange) || (method === 'climb' && climbResult) || (method === 'shen' && shenResult) || (method === 'sweep' && sweepResults)) && (
+              canSavePreset && (
               <button
                 onClick={() => setShowSavePreset(true)}
                 className="w-full py-2 text-xs font-medium text-gray-300 hover:text-white border border-dark-border hover:border-brand-primary/50 rounded transition-all hover:bg-brand-primary/10 flex items-center justify-center gap-2"
@@ -1916,6 +1897,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                 </svg>
                 Save Simulator Preset
               </button>
+              )
             )}
           </div>
         )}
@@ -2534,7 +2516,7 @@ export const QuickTestTab = ({ presetsHook }) => {
       </div>
 
       {/* Save Preset Modal */}
-      {showSavePreset && presetsHook && (
+      {showSavePreset && canSavePreset && (
         <SavePresetModal
           values={{
             cda,
