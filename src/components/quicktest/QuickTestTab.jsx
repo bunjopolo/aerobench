@@ -1287,7 +1287,7 @@ export const QuickTestTab = ({ presetsHook }) => {
         </div>
 
         {/* Combined: Analysis Method + System Parameters + Solver */}
-        <div className="card order-2">
+        <div className="card order-3">
           <h3 className="label-sm mb-2">Solver &amp; Variables</h3>
 
           {/* Method Selector - Shows methods based on feature flags */}
@@ -1324,7 +1324,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                   disabled={!!(data || data2)}
                   className={`px-2 py-1.5 rounded text-xxs font-medium flex-1 transition-colors ${method === 'sweep' ? 'bg-violet-600 text-white' : 'text-gray-400'} ${(data || data2) ? 'cursor-not-allowed' : ''}`}
                 >
-                  Sweep
+                  Solution Space
                 </button>
               )}
             </div>
@@ -1659,7 +1659,7 @@ export const QuickTestTab = ({ presetsHook }) => {
                           : 'btn-neutral'
                       }`}
                     >
-                      Run Sweep
+                      Run Solution Space
                     </button>
                   )}
                 </>
@@ -1670,7 +1670,7 @@ export const QuickTestTab = ({ presetsHook }) => {
 
         {/* Combined: Fitted Values + Results */}
         {(data || (method !== 'chung' && (data || data2))) && (
-          <div className="card order-1">
+          <div className="card order-2">
             <h3 className="label-sm mb-3">Results</h3>
 
             {/* CdA/Crr Sliders */}
@@ -1876,9 +1876,6 @@ export const QuickTestTab = ({ presetsHook }) => {
             {method === 'sweep' && sweepResults && (
               <div className="text-xs mb-3 p-2 bg-dark-bg rounded border border-dark-border space-y-1">
                 <div className="flex justify-between"><span className="text-gray-500">RMSE Range</span><span className="font-mono"><span className="text-emerald-400">{sweepResults.minRmse.toFixed(2)}</span> - <span className="text-red-400">{sweepResults.maxRmse.toFixed(2)}m</span></span></div>
-                <div className="text-xxs text-yellow-400 pt-1 border-t border-dark-border">
-                  Many solutions in the green valley are equally valid
-                </div>
                 <div className="text-xxs text-gray-500">
                   {(sweepResults.cdaValues.length * sweepResults.crrValues.length).toLocaleString()} combinations tested
                 </div>
@@ -1904,29 +1901,14 @@ export const QuickTestTab = ({ presetsHook }) => {
 
         {/* Sweep Info Panel */}
         {method === 'sweep' && sweepResults && (
-          <div className="card border-violet-500/30 order-4">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xxs px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-400 border border-violet-500/30 uppercase font-medium">2D Sweep</span>
-              <h3 className="label-sm">Solution Space</h3>
-            </div>
-            <div className="text-xxs space-y-2">
-              <p className="text-gray-400">
-                <span className="text-emerald-400">Green = low RMSE</span> (good fit), <span className="text-red-400">Red = high RMSE</span> (poor fit).
+          <div className="card border-violet-500/30 order-1">
+            <h3 className="label-sm mb-3">2D Solution Space</h3>
+            <div className="p-2 bg-violet-900/20 rounded border border-violet-500/30 text-xxs space-y-1">
+              <p className="text-violet-300 font-medium">What does this heatmap represent?</p>
+              <p className="text-violet-100/80">
+                Each cell is one CdA/Crr pair scored by fit error (RMSE): green is lower error and red is higher error.
+                The diagonal valley shows degenerate solutions, where many CdA/Crr combinations can fit a single ride similarly well.
               </p>
-              <div className="p-2 bg-yellow-900/20 border border-yellow-500/30 rounded">
-                <p className="text-yellow-400 font-medium mb-1">Why is there a valley?</p>
-                <p className="text-yellow-200/70">
-                  With single-ride data, CdA and Crr are <span className="text-white">mathematically degenerate</span>. The diagonal valley shows that many different CdA/Crr combinations produce equally good fits.
-                </p>
-              </div>
-              <div className="pt-2 border-t border-dark-border">
-                <p className="text-gray-500 mb-1">What this means:</p>
-                <ul className="text-gray-400 space-y-1 list-disc list-inside">
-                  <li>Higher CdA + Lower Crr ≈ Lower CdA + Higher Crr</li>
-                  <li>You <span className="text-red-400">cannot</span> uniquely determine both from one ride</li>
-                  <li>Use <span className="text-cyan-400">Climb</span> or <span className="text-amber-400">Shen</span> methods for better separation</li>
-                </ul>
-              </div>
             </div>
           </div>
         )}
@@ -1942,23 +1924,23 @@ export const QuickTestTab = ({ presetsHook }) => {
             {/* Low-pass Filter */}
             <div className="space-y-2 rounded-lg border border-dark-border bg-dark-bg/60 p-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xxs text-gray-400">Filters</span>
+                <span className="text-xxs text-gray-400">Apply smoothing to</span>
                 <div className="flex flex-wrap gap-2">
-                  <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>GPS</button>
-                  <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual</button>
+                  <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>Actual Elevation</button>
+                  <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual Elevation</button>
                   <button
                     onClick={() => setFilterDemWithVe(!filterDemWithVe)}
                     disabled={!useDemElevation}
                     className={`text-xxs px-2 py-0.5 rounded border ${filterDemWithVe ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'} ${!useDemElevation ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
-                    DEM-VE
+                    DEM-VE Match
                   </button>
                 </div>
               </div>
               {(filterGps || filterVirtual) && (
                 <div className="pt-1 border-t border-dark-border/70">
                   <div className="flex justify-between text-xxs mb-1">
-                    <span className="text-gray-500">Intensity</span>
+                    <span className="text-gray-500">Low-pass intensity</span>
                     <span className="text-white font-mono">{filterIntensity}</span>
                   </div>
                   <input type="range" min="1" max="10" value={filterIntensity} onChange={e => setFilterIntensity(parseInt(e.target.value))} className="w-full accent-emerald-500" />
@@ -2376,17 +2358,24 @@ export const QuickTestTab = ({ presetsHook }) => {
                       ]
                     })()}
                     layout={{
-                      autosize: true,
-                      paper_bgcolor: '#0f172a',
-                      plot_bgcolor: '#0f172a',
-                      font: { color: '#94a3b8', size: 11 },
+                      ...layout,
                       margin: { t: 30, l: 50, r: 20, b: 40 },
                       grid: { rows: 2, columns: 1, pattern: 'independent' },
-                      showlegend: true,
-                      legend: { orientation: 'h', y: 1.02, x: 0, font: { size: 10 } },
-                      xaxis: { title: 'Distance (m)', gridcolor: '#1e293b', range: distanceRange },
-                      yaxis: { title: 'Elevation (m)', gridcolor: '#1e293b', domain: [0.35, 1] },
-                      yaxis2: { title: 'Error (m)', gridcolor: '#1e293b', anchor: 'x', domain: [0, 0.28] }
+                      xaxis: {
+                        ...layout.xaxis,
+                        title: 'Distance (m)',
+                        range: distanceRange
+                      },
+                      yaxis: {
+                        ...layout.yaxis,
+                        title: 'Elevation (m)',
+                        domain: [0.35, 1]
+                      },
+                      yaxis2: {
+                        ...layout.yaxis2,
+                        title: 'Error (m)',
+                        domain: [0, 0.28]
+                      }
                     }}
                     onRelayout={handleRelayout}
                     useResizeHandler={true}

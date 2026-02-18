@@ -19,8 +19,8 @@ const FEATURE_INFO = {
     color: 'emerald'
   },
   method_sweep: {
-    name: 'Sweep Method',
-    description: '2D parameter sweep showing all possible CdA/Crr solutions and their degeneracy',
+    name: 'Solution Space Visualizer',
+    description: '2D solution space visualization showing CdA/Crr degeneracy and fit quality',
     color: 'violet'
   }
 }

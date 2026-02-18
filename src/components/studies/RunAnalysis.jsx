@@ -1309,29 +1309,29 @@ export const RunAnalysis = ({ variation, study, onBack }) => {
               </div>
 
               {/* Low-pass Filter */}
-              <div className="space-y-2 rounded-lg border border-dark-border bg-dark-bg/60 p-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xxs text-gray-400">Filters</span>
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>GPS</button>
-                    <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual</button>
-                    <button
-                      onClick={() => setFilterDemWithVe(!filterDemWithVe)}
-                      disabled={!useDemElevation}
-                      className={`text-xxs px-2 py-0.5 rounded border ${filterDemWithVe ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'} ${!useDemElevation ? 'opacity-50 cursor-not-allowed' : ''}`}
-                    >
-                      DEM-VE
-                    </button>
-                  </div>
+            <div className="space-y-2 rounded-lg border border-dark-border bg-dark-bg/60 p-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xxs text-gray-400">Apply smoothing to</span>
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => setFilterGps(!filterGps)} className={`text-xxs px-2 py-0.5 rounded border ${filterGps ? 'bg-red-900/30 border-red-500/50 text-red-400' : 'border-dark-border text-gray-500'}`}>Actual Elevation</button>
+                  <button onClick={() => setFilterVirtual(!filterVirtual)} className={`text-xxs px-2 py-0.5 rounded border ${filterVirtual ? 'bg-cyan-900/30 border-cyan-500/50 text-cyan-400' : 'border-dark-border text-gray-500'}`}>Virtual Elevation</button>
+                  <button
+                    onClick={() => setFilterDemWithVe(!filterDemWithVe)}
+                    disabled={!useDemElevation}
+                    className={`text-xxs px-2 py-0.5 rounded border ${filterDemWithVe ? 'bg-emerald-900/30 border-emerald-500/50 text-emerald-400' : 'border-dark-border text-gray-500'} ${!useDemElevation ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    DEM-VE Match
+                  </button>
                 </div>
-                {(filterGps || filterVirtual) && (
-                  <div className="pt-1 border-t border-dark-border/70">
-                    <div className="flex justify-between text-xxs mb-1">
-                      <span className="text-gray-500">Intensity</span>
-                      <span className="text-white font-mono">{filterIntensity}</span>
-                    </div>
-                    <input type="range" min="1" max="10" value={filterIntensity} onChange={e => setFilterIntensity(parseInt(e.target.value, 10))} className="w-full accent-emerald-500" />
+              </div>
+              {(filterGps || filterVirtual) && (
+                <div className="pt-1 border-t border-dark-border/70">
+                  <div className="flex justify-between text-xxs mb-1">
+                    <span className="text-gray-500">Low-pass intensity</span>
+                    <span className="text-white font-mono">{filterIntensity}</span>
                   </div>
+                  <input type="range" min="1" max="10" value={filterIntensity} onChange={e => setFilterIntensity(parseInt(e.target.value, 10))} className="w-full accent-emerald-500" />
+                </div>
                 )}
                 {filterDemWithVe && useDemElevation && (
                   <div className="pt-1 border-t border-dark-border/70 space-y-1.5">
